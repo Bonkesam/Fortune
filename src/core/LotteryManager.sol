@@ -5,7 +5,7 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {VRFCoordinatorV2Interface} from "@chainlink/src/interfaces/vrf/VRFCoordinatorV2Interface.sol";
 import {ITicketNFT} from "../interfaces/ITicketNFT.sol";
-import {IPrizePool} from "./interfaces/IPrizePool.sol";
+import {IPrizePool} from "../interfaces/IPrizePool.sol";
 import {IRandomness} from "../interfaces/IRandomness.sol";
 
 /**
