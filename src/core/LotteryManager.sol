@@ -2,11 +2,13 @@
 pragma solidity ^0.8.19;
 
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
 import {ITicketNFT} from "../interfaces/ITicketNFT.sol";
 import {IPrizePool} from "../interfaces/IPrizePool.sol";
 import {IRandomness} from "../interfaces/IRandomness.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
 /**
  * @title Lottery Manager
@@ -124,8 +126,9 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         address _randomness,
         uint256 _ticketPrice,
         uint256 _salePeriod,
-        uint256 _cooldownPeriod
-    ) Ownable2Step() {
+        uint256 _cooldownPeriod,
+        address initialOwner
+    ) Ownable(initialOwner) {
         ticketNFT = ITicketNFT(_ticketNFT);
         prizePool = IPrizePool(_prizePool);
         randomness = IRandomness(_randomness);
@@ -171,10 +174,14 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         if (msg.value != ticketPrice * quantity) revert InsufficientPayment();
 
         Draw storage draw = draws[currentDrawId];
-        prizePool.deposit{value: msg.value}();
+        prizePool.deposit{value: msg.value}(msg.value);
 
         // Mint NFT tickets
-        uint256[] memory ticketIds = ticketNFT.mintBatch(msg.sender, quantity);
+        uint256[] memory ticketIds = ticketNFT.mintBatch(
+            msg.sender,
+            quantity,
+            currentDrawId
+        );
 
         for (uint256 i = 0; i < quantity; i++) {
             draw.tickets.push(ticketIds[i]);
@@ -254,8 +261,63 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         uint256 randomnessSeed,
         uint256 totalTickets
     ) internal pure returns (uint256[] memory winners) {
-        // Implementation details omitted for brevity
-        // Returns 10 winners for demonstration
+        require(totalTickets >= 10, "Insufficient tickets");
+        winners = new uint256[](10);
+        bytes32 rngHash = keccak256(abi.encode(randomnessSeed));
+
+        // Initialize with first 10 tickets as base case
+        for (uint256 i = 0; i < 10; i++) {
+            winners[i] = i;
+        }
+
+        // Generate 10 random indices using hash chain
+        for (uint256 i = 0; i < 10; i++) {
+            // Get 25 bits of randomness per iteration (250 bits total)
+            uint256 random = uint256(rngHash) >> (i * 25);
+            uint256 j = i + (random % (totalTickets - i));
+
+            // Fisher-Yates swap logic
+            if (j < 10) {
+                // Swap positions within winners array
+                (winners[i], winners[j]) = (winners[j], winners[i]);
+            } else {
+                // Replace with new unique index
+                winners[i] = j;
+            }
+
+            // Generate new hash if needed
+            if (i % 10 == 9) rngHash = keccak256(abi.encode(rngHash));
+        }
+
+        // Final uniqueness check and sort
+        _validateAndSort(winners, totalTickets);
+        return winners;
+    }
+
+    function _validateAndSort(
+        uint256[] memory winners,
+        uint256 totalTickets
+    ) private pure {
+        // Implement sorting and uniqueness checks
+        for (uint256 i = 0; i < winners.length; i++) {
+            require(winners[i] < totalTickets, "Invalid winner index");
+
+            // Check for duplicates
+            for (uint256 j = i + 1; j < winners.length; j++) {
+                require(winners[i] != winners[j], "Duplicate winner");
+            }
+        }
+
+        // Insertion sort for deterministic output
+        for (uint256 i = 1; i < winners.length; i++) {
+            uint256 key = winners[i];
+            uint256 j = i - 1;
+            while (j >= 0 && winners[j] > key) {
+                winners[j + 1] = winners[j];
+                j--;
+            }
+            winners[j + 1] = key;
+        }
     }
 
     // -----------------------------
