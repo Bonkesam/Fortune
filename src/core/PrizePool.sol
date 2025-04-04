@@ -184,13 +184,12 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         );
 
         // Example: Aave deposit
-        // ILendingPool(config.yieldProtocol).deposit{value: investmentAmount}(
-        //     address(0),
-        //     investmentAmount,
-        //     address(this),
-        //     0
-        // );
-
+        IAave(aavePool).deposit{value: investmentAmount}(
+            address(0), // ETH
+            investmentAmount,
+            address(this),
+            0
+        );
         uint256 sharesAfter = IERC20(config.yieldToken).balanceOf(
             address(this)
         );

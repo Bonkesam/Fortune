@@ -5,7 +5,7 @@ libs = ["lib"]
 
 remappings = [
     '@openzeppelin/contracts=lib/openzeppelin-contracts/contracts/',
-    '@chainlink/contracts=lib/foundry-chainlink-toolkit/lib/chainlink-brownie-contracts/contracts/',
+    '@chainlink/contracts=lib/chainlink-brownie-contracts/contracts/',
 ]
 
 [fmt]
