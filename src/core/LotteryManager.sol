@@ -228,9 +228,17 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
             randomWords[0],
             draw.tickets.length
         );
+
+        // Convert indices to ticket IDs and get owners
+        address[] memory winners = new address[](draw.winningNumbers.length);
+        for (uint256 i = 0; i < draw.winningNumbers.length; i++) {
+            uint256 ticketId = draw.tickets[draw.winningNumbers[i]];
+            winners[i] = ticketNFT.ownerOf(ticketId);
+        }
+
         draw.phase = DrawPhase.Completed;
 
-        prizePool.distributePrizes(currentDrawId, draw.winningNumbers);
+        prizePool.distributePrizes(currentDrawId, winners);
 
         emit DrawCompleted(currentDrawId, draw.winningNumbers);
     }

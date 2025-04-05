@@ -87,4 +87,6 @@ interface ITicketNFT {
      * @return True if ticket has golden status
      */
     function isGoldenTicket(uint256 tokenId) external view returns (bool);
+
+    function ownerOf(uint256 tokenId) external view returns (address);
 }

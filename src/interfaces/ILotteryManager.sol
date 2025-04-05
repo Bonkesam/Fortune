@@ -90,4 +90,11 @@ interface ILotteryManager {
      * @return priceInWei Current ticket price in wei
      */
     function ticketPrice() external view returns (uint256);
+
+    /**
+     * @notice Get the owner of a specific ticket
+     * @param ticketId The ID of the ticket
+     * @return The address of the ticket owner
+     */
+    function getTicketOwner(uint256 ticketId) external view returns (address);
 }

@@ -77,12 +77,12 @@ interface IPrizePool {
     /**
      * @notice Distribute prizes for completed draw
      * @param drawId Lottery draw identifier
-     * @param winningTickets Array of winning ticket IDs
+     * @param winners Array of winning ticket IDs
      * @dev Only callable by LotteryManager
      */
     function distributePrizes(
         uint256 drawId,
-        uint256[] calldata winningTickets
+        address[] calldata winners
     ) external;
 
     // -----------------------------

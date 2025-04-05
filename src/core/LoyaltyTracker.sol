@@ -63,8 +63,8 @@ contract LoyaltyTracker is AccessControl, ReentrancyGuard {
     // -----------------------------
     constructor(address _fortToken, address _daoAdmin) {
         fortToken = IFORT(_fortToken);
-        _setupRole(DEFAULT_ADMIN_ROLE, _daoAdmin);
-        _setupRole(TRACKER_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _daoAdmin);
+        _grantRole(TRACKER_ROLE, msg.sender);
 
         // Initialize default tiers
         tiers.push(TierConfig(100, 500)); // Tier 1: 100 tickets → 5% discount

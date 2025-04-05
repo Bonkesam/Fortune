@@ -5,8 +5,10 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ILotteryManager} from "../interfaces/ILotteryManager.sol";
+import {IAave} from "../interfaces/IAave.sol";
 
 /**
  * @title Prize Pool
@@ -23,6 +25,10 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     uint256 public constant FEE_DENOMINATOR = 10_000;
     uint256 public constant MAX_PROTOCOL_FEE = 500; // 5%
     uint256 public constant YIELD_SLIPPAGE = 100; // 1%
+
+    address public constant AAVE_POOL =
+        0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9; // Mainnet Aave LendingPool
+    address public constant A_WETH = 0x030bA81f1c18d280636F32af80b9AAd02Cf0854e; // Mainnet aWETH
 
     // -----------------------------
     // State Variables
@@ -88,15 +94,25 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     // Constructor
     // -----------------------------
     constructor(
+        address _initialOwner,
         address _manager,
         address _treasury,
         address _feeCollector,
         uint256 _protocolFee
-    ) Ownable2Step() validAddress(_manager) {
+    ) Ownable(_initialOwner) validAddress(_manager) {
+        require(_treasury != address(0), "Invalid treasury");
+        require(_feeCollector != address(0), "Invalid fee collector");
+
         lotteryManager = ILotteryManager(_manager);
         _setFeeCollector(_feeCollector);
         _setTreasury(_treasury);
         _setProtocolFee(_protocolFee);
+
+        yieldStrategies[AAVE_POOL] = YieldConfig({
+            yieldToken: A_WETH,
+            yieldProtocol: AAVE_POOL,
+            isActive: true
+        });
     }
 
     // -----------------------------
@@ -125,24 +141,24 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     /**
      * @notice Distribute prizes for a completed draw
      * @param drawId ID of the completed draw
-     * @param winningTickets Array of winning ticket IDs
+     * @param winners Array of winning ticket IDs
      * @dev Can only be called by LotteryManager
      */
     function distributePrizes(
         uint256 drawId,
-        uint256[] calldata winningTickets
+        address[] calldata winners
     ) external onlyManager nonReentrant {
         uint256 totalPrizePool = tokenReserves[address(0)];
         PrizeDistribution memory dist = _calculateDistribution(totalPrizePool);
 
         // Distribute grand prize
-        _safeTransferETH(winningTickets[0], dist.grandPrize);
+        _safeTransferETH(winners[0], dist.grandPrize);
 
         // Distribute secondary prizes
-        for (uint256 i = 1; i < winningTickets.length; i++) {
+        for (uint256 i = 1; i < winners.length; i++) {
             _safeTransferETH(
-                winningTickets[i],
-                dist.secondaryPrizes / (winningTickets.length - 1)
+                winners[i],
+                dist.secondaryPrizes / (winners.length - 1)
             );
         }
 
@@ -184,7 +200,7 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         );
 
         // Example: Aave deposit
-        IAave(aavePool).deposit{value: investmentAmount}(
+        IAave(config.yieldProtocol).deposit{value: investmentAmount}(
             address(0), // ETH
             investmentAmount,
             address(this),
