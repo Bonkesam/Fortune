@@ -1,21 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
-import {ERC721URIStorage} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 
 /**
  * @title dFortune Lottery Ticket NFT
- * @notice ERC-721 contract representing lottery tickets with advanced features
- * @dev Combines ERC721Enumerable, ERC721URIStorage, and AccessControl for maximum functionality
+ * @notice ERC721 contract representing lottery tickets with advanced features
+ * @dev Uses ERC721Enumerable for enumeration and AccessControl for role management
  */
 contract TicketNFT is
+    ERC721,
     ERC721Enumerable,
-    ERC721URIStorage,
     Ownable2Step,
     ReentrancyGuard,
     AccessControl
@@ -35,6 +37,8 @@ contract TicketNFT is
     string private _baseTokenURI;
     bool public metadataLocked;
     address public lotteryManager;
+    // Custom token URI mapping to replace ERC721URIStorage
+    mapping(uint256 => string) private _tokenURIs;
 
     struct TicketTraits {
         uint256 rarity; // 0 = normal, 1 = golden
@@ -85,13 +89,14 @@ contract TicketNFT is
         string memory name,
         string memory symbol,
         string memory baseURI,
-        address manager
-    ) ERC721(name, symbol) {
+        address manager,
+        address initialOwner
+    ) Ownable(initialOwner) ERC721(name, symbol) {
         _baseTokenURI = baseURI;
         lotteryManager = manager;
 
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _setupRole(MINTER_ROLE, manager);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(MINTER_ROLE, manager);
 
         _setRoleAdmin(MINTER_ROLE, DEFAULT_ADMIN_ROLE);
     }
@@ -168,6 +173,20 @@ contract TicketNFT is
         _baseTokenURI = newBaseURI;
     }
 
+    /**
+     * @notice Sets the token URI for a given token
+     * @param tokenId The token ID to set the URI for
+     * @param uri The URI to assign
+     */
+    function setTokenURI(
+        uint256 tokenId,
+        string memory uri
+    ) external onlyOwner {
+        if (metadataLocked) revert MetadataPermanentlyLocked();
+        if (!_exists(tokenId)) revert InvalidTokenId();
+        _tokenURIs[tokenId] = uri;
+    }
+
     // -----------------------------
     // View Functions
     // -----------------------------
@@ -197,21 +216,65 @@ contract TicketNFT is
     // Security & Overrides
     // -----------------------------
 
-    /// @dev Prevent token transfers during active draws
-    function _beforeTokenTransfer(
-        address from,
+    /// @dev Override required by ERC721Enumerable and ERC721
+    function _update(
         address to,
         uint256 tokenId,
-        uint256 batchSize
-    ) internal override(ERC721, ERC721Enumerable) {
-        super._beforeTokenTransfer(from, to, tokenId, batchSize);
+        address auth
+    ) internal virtual override(ERC721, ERC721Enumerable) returns (address) {
+        return super._update(to, tokenId, auth);
     }
 
-    /// @dev Merge ERC721 and ERC721URIStorage
+    /// @dev Base URI for computing tokenURI
+    function _baseURI() internal view virtual override returns (string memory) {
+        return _baseTokenURI;
+    }
+
+    /// @dev Check if token exists
+    function _exists(uint256 tokenId) internal view virtual returns (bool) {
+        try this.ownerOf(tokenId) returns (address) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Override required by ERC721Enumerable
+    function _increaseBalance(
+        address account,
+        uint128 value
+    ) internal virtual override(ERC721, ERC721Enumerable) {
+        super._increaseBalance(account, value);
+    }
+
+    /// @dev Custom burn implementation that cleans up metadata
+    function burn(uint256 tokenId) public {
+        // Check that the caller is approved or the owner
+        _checkAuthorized(ownerOf(tokenId), _msgSender(), tokenId);
+
+        // Call the internal burn function from ERC721
+        _burn(tokenId);
+
+        // Clean up our custom metadata
+        delete _ticketTraits[tokenId];
+        delete _tokenURIs[tokenId];
+    }
+
+    /// @dev Override tokenURI to provide custom URI logic
     function tokenURI(
         uint256 tokenId
-    ) public view override(ERC721, ERC721URIStorage) returns (string memory) {
-        return string(abi.encodePacked(_baseTokenURI, tokenId.toString()));
+    ) public view virtual override returns (string memory) {
+        _requireOwned(tokenId);
+
+        string memory _tokenURI = _tokenURIs[tokenId];
+
+        // If there is a specific URI set for this token, return it
+        if (bytes(_tokenURI).length > 0) {
+            return _tokenURI;
+        }
+
+        // Otherwise construct from the base
+        return string(abi.encodePacked(_baseURI(), tokenId.toString()));
     }
 
     /// @dev Support multiple inheritance
@@ -220,7 +283,8 @@ contract TicketNFT is
     )
         public
         view
-        override(ERC721, ERC721Enumerable, ERC721URIStorage, AccessControl)
+        virtual
+        override(ERC721, ERC721Enumerable, AccessControl)
         returns (bool)
     {
         return super.supportsInterface(interfaceId);

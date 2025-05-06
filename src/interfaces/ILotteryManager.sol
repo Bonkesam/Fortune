@@ -97,4 +97,9 @@ interface ILotteryManager {
      * @return The address of the ticket owner
      */
     function getTicketOwner(uint256 ticketId) external view returns (address);
+
+    function completeDraw(
+        uint256 drawId,
+        uint256[] calldata randomWords
+    ) external;
 }

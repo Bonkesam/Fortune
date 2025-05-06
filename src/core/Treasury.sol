@@ -65,9 +65,9 @@ contract Treasury is AccessControl, ReentrancyGuard {
     // Constructor
     // -----------------------------
     constructor(address dao, address[] memory initialAssets) {
-        _setupRole(DEFAULT_ADMIN_ROLE, dao);
-        _setupRole(TIMELOCK_ROLE, dao);
-        _setupRole(EMERGENCY_ROLE, dao);
+        _grantRole(DEFAULT_ADMIN_ROLE, dao);
+        _grantRole(TIMELOCK_ROLE, dao);
+        _grantRole(EMERGENCY_ROLE, dao);
         operationDelay = MIN_DELAY;
 
         for (uint256 i = 0; i < initialAssets.length; i++) {

@@ -3,59 +3,43 @@ pragma solidity ^0.8.19;
 
 import {Governor} from "@openzeppelin/contracts/governance/Governor.sol";
 import {GovernorSettings} from "@openzeppelin/contracts/governance/extensions/GovernorSettings.sol";
+import {GovernorCountingSimple} from "@openzeppelin/contracts/governance/extensions/GovernorCountingSimple.sol";
 import {GovernorVotes} from "@openzeppelin/contracts/governance/extensions/GovernorVotes.sol";
 import {GovernorTimelockControl} from "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
-import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
+import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
 
-/**
- * @title dFortune DAO Governor
- * @notice Governance contract for protocol parameter management
- * @dev Combines OZ Governor with timelock and vote delegation
- * Features:
- * - Proposal threshold
- * - Voting delay/period
- * - Timelock execution
- * - Quorum management
- */
 contract DAOGovernor is
     Governor,
     GovernorSettings,
+    GovernorCountingSimple,
     GovernorVotes,
     GovernorTimelockControl
 {
     using SafeCast for uint256;
 
-    /// @notice Minimum quorum numerator (basis points of total supply)
     uint256 public constant QUORUM_NUMERATOR = 400; // 4%
+    uint256 public constant PROPOSAL_THRESHOLD = 1e18;
 
-    /// @notice Minimum voting power needed to create proposal
-    uint256 public constant PROPOSAL_THRESHOLD = 1e18; // 1 FORT
-
-    /// @notice Supported contract targets for governance
     address public immutable lotteryManager;
     address public immutable prizePool;
 
-    /// @notice Track proposal validation status
-    mapping(uint256 => bool) private _validProposals;
-
-    /// @dev Custom errors for gas efficiency
     error InvalidTarget();
     error UnauthorizedFunction();
     error InsufficientVotingPower();
-    error AlreadyValidated();
 
     constructor(
-        IVotes _token,
+        ERC20Votes _token,
         TimelockController _timelock,
         address _lotteryManager,
         address _prizePool
     )
         Governor("dFortune DAO Governor")
         GovernorSettings(
-            1 /* 1 block voting delay */,
-            45818 /* ~7 days (12s/block) */,
+            1 /* voting delay */,
+            259200 /* voting period */,
             1e18 /* proposal threshold */
         )
         GovernorVotes(_token)
@@ -65,13 +49,41 @@ contract DAOGovernor is
         prizePool = _prizePool;
     }
 
-    /**
-     * @notice Create a new governance proposal
-     * @param targets Contract addresses to call
-     * @param values ETH values for calls
-     * @param calldatas Encoded function calls
-     * @param description Proposal description
-     */
+    ////////////////////////////
+    /// Core Configuration /////
+    ////////////////////////////
+
+    function quorum(uint256 timepoint) public view override returns (uint256) {
+        return
+            (token().getPastTotalSupply(timepoint) * QUORUM_NUMERATOR) / 10000;
+    }
+
+    function proposalThreshold()
+        public
+        view
+        override(Governor, GovernorSettings)
+        returns (uint256)
+    {
+        return super.proposalThreshold();
+    }
+
+    // Fix for OZ v5 compatibility
+    function proposalNeedsQueuing(
+        uint256 proposalId
+    )
+        public
+        view
+        virtual
+        override(Governor, GovernorTimelockControl)
+        returns (bool)
+    {
+        return true;
+    }
+
+    ////////////////////////////
+    /// Proposal Validation ////
+    ////////////////////////////
+
     function propose(
         address[] memory targets,
         uint256[] memory values,
@@ -82,15 +94,11 @@ contract DAOGovernor is
         return super.propose(targets, values, calldatas, description);
     }
 
-    /**
-     * @notice Validate proposal targets and functions
-     * @dev Only allows modifying LotteryManager or PrizePool
-     */
     function _validateProposal(
         address[] memory targets,
         bytes[] memory calldatas
-    ) internal {
-        if (getVotes(msg.sender, block.number - 1) < proposalThreshold()) {
+    ) internal view {
+        if (getVotes(msg.sender, clock() - 1) < proposalThreshold()) {
             revert InsufficientVotingPower();
         }
 
@@ -99,16 +107,20 @@ contract DAOGovernor is
                 revert InvalidTarget();
             }
 
-            bytes4 selector = bytes4(calldatas[i][:4]);
+            // Fixed the bytes4 selector extraction
+            bytes memory calldata_i = calldatas[i];
+            bytes4 selector;
+            assembly {
+                // OZ v5 compatibility fix - ensure proper selector extraction
+                selector := mload(add(calldata_i, 32))
+            }
+
             if (!_isAllowedFunction(selector)) {
                 revert UnauthorizedFunction();
             }
         }
     }
 
-    /**
-     * @notice Check if function selector is governance-allowed
-     */
     function _isAllowedFunction(bytes4 selector) internal pure returns (bool) {
         return
             selector == bytes4(keccak256("setTicketPrice(uint256)")) ||
@@ -121,22 +133,12 @@ contract DAOGovernor is
             bytes4(keccak256("setYieldProtocol(address,address,bool)"));
     }
 
-    /**
-     * @notice Current quorum requirement
-     * @param blockNumber Block number to check quorum at
-     * @return quorum Required number of votes
-     */
-    function quorum(
-        uint256 blockNumber
-    ) public view override returns (uint256) {
-        return
-            (token.getPastTotalSupply(blockNumber) * QUORUM_NUMERATOR) / 10000;
-    }
+    ////////////////////////////
+    /// Voting Configuration ///
+    ////////////////////////////
 
-    /**
-     * @notice Get voting delay
-     * @dev Overrides both Governor and GovernorSettings
-     */
+    // For OZ v5, adjust quorum settings to ensure proposals can pass
+    // Override votingDelay and votingPeriod for complete clarity
     function votingDelay()
         public
         view
@@ -146,10 +148,6 @@ contract DAOGovernor is
         return super.votingDelay();
     }
 
-    /**
-     * @notice Get voting period
-     * @dev Overrides both Governor and GovernorSettings
-     */
     function votingPeriod()
         public
         view
@@ -159,22 +157,57 @@ contract DAOGovernor is
         return super.votingPeriod();
     }
 
-    /**
-     * @notice Get proposal threshold
-     * @dev Overrides both Governor and GovernorSettings
-     */
-    function proposalThreshold()
+    // Override for the counting mode to ensure OZ v5 compatibility
+    function COUNTING_MODE()
         public
-        view
-        override(Governor, GovernorSettings)
-        returns (uint256)
+        pure
+        override(IGovernor, GovernorCountingSimple)
+        returns (string memory)
     {
-        return super.proposalThreshold();
+        return "support=bravo&quorum=for,abstain";
     }
 
-    /**
-     * @notice Get Governor compatibility
-     */
+    ////////////////////////////
+    /// Timelock Integration ///
+    ////////////////////////////
+
+    function _queueOperations(
+        uint256 proposalId,
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        bytes32 descriptionHash
+    ) internal override(Governor, GovernorTimelockControl) returns (uint48) {
+        return
+            GovernorTimelockControl._queueOperations(
+                proposalId,
+                targets,
+                values,
+                calldatas,
+                descriptionHash
+            );
+    }
+
+    function _executeOperations(
+        uint256 proposalId,
+        address[] memory targets,
+        uint256[] memory values,
+        bytes[] memory calldatas,
+        bytes32 descriptionHash
+    ) internal override(Governor, GovernorTimelockControl) {
+        GovernorTimelockControl._executeOperations(
+            proposalId,
+            targets,
+            values,
+            calldatas,
+            descriptionHash
+        );
+    }
+
+    //////////////////////////////
+    /// Required Overrides ///////
+    //////////////////////////////
+
     function state(
         uint256 proposalId
     )
@@ -186,22 +219,6 @@ contract DAOGovernor is
         return super.state(proposalId);
     }
 
-    /**
-     * @notice Create timelock execution
-     */
-    function _execute(
-        uint256 proposalId,
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal override(Governor, GovernorTimelockControl) {
-        super._execute(proposalId, targets, values, calldatas, descriptionHash);
-    }
-
-    /**
-     * @notice Cancel timelock execution
-     */
     function _cancel(
         address[] memory targets,
         uint256[] memory values,
@@ -211,9 +228,6 @@ contract DAOGovernor is
         return super._cancel(targets, values, calldatas, descriptionHash);
     }
 
-    /**
-     * @notice Get executor address
-     */
     function _executor()
         internal
         view
@@ -221,5 +235,27 @@ contract DAOGovernor is
         returns (address)
     {
         return super._executor();
+    }
+
+    //////////////////////////////
+    /// Clock Configuration //////
+    //////////////////////////////
+
+    function clock()
+        public
+        view
+        override(Governor, GovernorVotes)
+        returns (uint48)
+    {
+        return uint48(block.timestamp);
+    }
+
+    function CLOCK_MODE()
+        public
+        pure
+        override(Governor, GovernorVotes)
+        returns (string memory)
+    {
+        return "mode=timestamp";
     }
 }

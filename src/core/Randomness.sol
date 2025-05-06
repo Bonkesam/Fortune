@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
-import {IVRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {ILotteryManager} from "../interfaces/ILotteryManager.sol";
 
+import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 /**
  * @title Verifiable Randomness Provider
  * @notice Secure Chainlink VRF integration for provably fair random number generation
  * @dev Implements VRF v2 with callback validation and request tracking
  */
-contract Randomness is IVRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
+contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
     // -----------------------------
     // Chainlink VRF Configuration
     // -----------------------------
@@ -68,8 +69,9 @@ contract Randomness is IVRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
         address vrfCoordinator,
         bytes32 keyHash,
         uint64 _subscriptionId,
-        address _lotteryManager
-    ) IVRFConsumerBaseV2(vrfCoordinator) {
+        address _lotteryManager,
+        address initialOwner
+    ) VRFConsumerBaseV2(vrfCoordinator) Ownable(initialOwner) {
         if (vrfCoordinator == address(0)) revert InvalidCoordinator();
 
         VRF_COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);

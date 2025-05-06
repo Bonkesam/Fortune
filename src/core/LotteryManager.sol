@@ -63,6 +63,7 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
     }
 
     struct Draw {
+        uint256 drawId;
         uint256 startTime;
         uint256 endTime;
         uint256[] tickets;
@@ -106,6 +107,11 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         if (draws[currentDrawId].phase != DrawPhase.SaleOpen) {
             revert InvalidPhase(DrawPhase.SaleOpen);
         }
+        _;
+    }
+
+    modifier onlyRandomness() {
+        require(msg.sender == address(randomness), "Caller not Randomness");
         _;
     }
 
@@ -155,6 +161,7 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
 
         currentDrawId++;
         Draw storage newDraw = draws[currentDrawId];
+        newDraw.drawId = currentDrawId;
         newDraw.startTime = block.timestamp;
         newDraw.endTime = block.timestamp + salePeriod;
         newDraw.phase = DrawPhase.SaleOpen;
@@ -212,17 +219,17 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
     /**
      * @notice Complete the draw with VRF result
      * @dev Called by Chainlink VRF callback
-     * @param requestId Chainlink VRF request ID
+     * @param drawId Chainlink VRF request ID
      * @param randomWords Array of random numbers
      */
-    function fulfillRandomness(
-        uint256 requestId,
+    function CompleteDraw(
+        uint256 drawId,
         uint256[] memory randomWords
-    ) external {
-        if (msg.sender != address(randomness)) revert OnlyCoordinator();
+    ) external nonReentrant onlyRandomness {
+        Draw storage draw = draws[drawId];
 
-        Draw storage draw = draws[currentDrawId];
-        if (draw.requestId != requestId) revert RandomnessNotFulfilled();
+        require(draw.phase == DrawPhase.Drawing, "Invalid phase");
+        require(draw.drawId == drawId, "ID mismatch"); // Verify stored ID matches
 
         draw.winningNumbers = _selectWinners(
             randomWords[0],
@@ -232,13 +239,14 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         // Convert indices to ticket IDs and get owners
         address[] memory winners = new address[](draw.winningNumbers.length);
         for (uint256 i = 0; i < draw.winningNumbers.length; i++) {
-            uint256 ticketId = draw.tickets[draw.winningNumbers[i]];
+            uint256 ticketIndex = draw.winningNumbers[i];
+            uint256 ticketId = draw.tickets[ticketIndex];
             winners[i] = ticketNFT.ownerOf(ticketId);
         }
 
-        draw.phase = DrawPhase.Completed;
-
         prizePool.distributePrizes(currentDrawId, winners);
+
+        draw.phase = DrawPhase.Completed;
 
         emit DrawCompleted(currentDrawId, draw.winningNumbers);
     }

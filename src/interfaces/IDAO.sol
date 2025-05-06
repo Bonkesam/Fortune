@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.19;
+pragma solidity ^0.8.19;
 
 /**
  * @title IDAO
@@ -32,4 +32,4 @@ interface IDAO {
      * @return bool True if approved
      */
     function isApproved(uint256 proposalId) external view returns (bool);
-}S
+}
