@@ -32,6 +32,7 @@ contract DAOGovernorTest is Test {
         // Deploy dependencies
         token = new MyToken();
         lottery = new MockLottery();
+
         prizePool = new MockPrizePool();
 
         // In OZ v5, the admin needs to be an explicit address with admin rights
@@ -62,8 +63,12 @@ contract DAOGovernorTest is Test {
         timelock.grantRole(timelock.CANCELLER_ROLE(), address(governor));
 
         // Setup tokens for voting
-        deal(address(token), voter1, 2e18);
-        deal(address(token), voter2, 1e18);
+
+        // In setUp() function:
+
+        // Change from 2e18 to 5e22 (50 million tokens)
+        deal(address(token), voter1, 5e22);
+        deal(address(token), voter2, 3e22);
 
         // Delegate voting power
         vm.startPrank(voter1);
@@ -99,18 +104,19 @@ contract DAOGovernorTest is Test {
 
     // Test initialization
     function test_Initialization() public {
-        // Use a past block for getPastTotalSupply to avoid ERC5805FutureLookup error
-        uint256 pastBlock = block.number - 1;
+        // Use a past timestamp for quorum calculation
+        uint256 pastTime = block.timestamp - 1;
+        vm.warp(pastTime + 1); // Move time forward
+
         assertEq(
-            governor.quorum(pastBlock),
-            (token.getPastTotalSupply(pastBlock) * 400) / 10000
+            governor.quorum(pastTime),
+            (token.getPastTotalSupply(pastTime) * 400) / 10000
         );
         assertEq(governor.proposalThreshold(), 1e18);
-        assertEq(governor.votingDelay(), 1);
-        assertEq(governor.votingPeriod(), 45818);
+        assertEq(governor.votingDelay(), 1); // 1 block
+        assertEq(governor.votingPeriod(), 3 days); // Now checking for 3 days in seconds
         assertEq(address(governor.token()), address(token));
     }
-
     // Test proposal validation
     function test_ProposalValidation() public {
         // Make sure voter1 has adequate permissions

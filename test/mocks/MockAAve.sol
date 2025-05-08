@@ -17,25 +17,28 @@ contract MockAave {
     }
 
     // Set the yield multiplier (100 = 100% or 1:1, 105 = 105% or 1.05:1)
-    function setYieldMultiplier(uint256 _multiplier) external {
-        yieldMultiplier = _multiplier;
+    function setYieldMultiplier(uint256 multiplier) external {
+        yieldMultiplier = multiplier;
+    }
+    function convertToShares(uint256 assets) external view returns (uint256) {
+        return (assets * yieldMultiplier) / 100;
     }
 
     /**
      * @notice Mock implementation of Aave deposit
      * @dev Mints aTokens based on ETH deposited
      */
+    // In MockAave.sol
     function deposit(
-        address, // asset
-        uint256 amount,
-        address onBehalfOf,
-        uint16 // referralCode
-    ) external payable {
-        // Calculate yield-adjusted amount
-        uint256 aTokenAmount = (amount * yieldMultiplier) / 100;
-
-        // Mint aTokens to the recipient
-        MyToken(aToken).mint(onBehalfOf, aTokenAmount);
+        address,
+        uint256 assets,
+        address to,
+        uint16
+    ) external payable returns (uint256) {
+        uint256 shares = this.convertToShares(assets);
+        // Mint aTokens to simulate real protocol behavior
+        MyToken(aToken).mint(to, shares);
+        return shares;
     }
 
     /**
