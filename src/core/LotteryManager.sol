@@ -103,13 +103,6 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
     // Modifiers
     // -----------------------------
 
-    modifier onlyActiveDraw() {
-        if (draws[currentDrawId].phase != DrawPhase.SaleOpen) {
-            revert InvalidPhase(DrawPhase.SaleOpen);
-        }
-        _;
-    }
-
     modifier onlyRandomness() {
         require(msg.sender == address(randomness), "Caller not Randomness");
         _;
@@ -174,13 +167,27 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
      * @param quantity Number of tickets to purchase
      * @dev Payments are forwarded to PrizePool
      */
-    function buyTickets(
-        uint256 quantity
-    ) external payable onlyActiveDraw nonReentrant {
+    function buyTickets(uint256 quantity) external payable nonReentrant {
+        // Check that there is an active draw with sales open
+        if (
+            currentDrawId == 0 ||
+            draws[currentDrawId].phase != DrawPhase.SaleOpen
+        ) {
+            revert InvalidPhase(DrawPhase.SaleOpen);
+        }
+
+        // Check that the sale period hasn't ended
+        Draw storage draw = draws[currentDrawId];
+        if (block.timestamp > draw.endTime) {
+            draw.phase = DrawPhase.SaleClosed;
+            revert InvalidPhase(DrawPhase.SaleOpen);
+        }
+
+        // Validate ticket purchase
         if (quantity == 0 || quantity > 10) revert InvalidTicketCount();
         if (msg.value != ticketPrice * quantity) revert InsufficientPayment();
 
-        Draw storage draw = draws[currentDrawId];
+        // Forward payment to prize pool
         prizePool.deposit{value: msg.value}(msg.value);
 
         // Mint NFT tickets
@@ -190,6 +197,7 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
             currentDrawId
         );
 
+        // Record ticket IDs for this draw
         for (uint256 i = 0; i < quantity; i++) {
             draw.tickets.push(ticketIds[i]);
         }
@@ -202,13 +210,27 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
      * @dev Can only be called after sale period ends
      */
     function triggerDraw() external nonReentrant {
+        require(currentDrawId > 0, "No active draw");
         Draw storage draw = draws[currentDrawId];
 
-        if (block.timestamp < draw.endTime)
+        // Check if sales period has ended
+        if (block.timestamp < draw.endTime) {
             revert InvalidPhase(DrawPhase.SaleClosed);
-        if (draw.phase != DrawPhase.SaleOpen)
-            revert InvalidPhase(DrawPhase.SaleOpen);
+        }
 
+        // Update the phase if it's still in SaleOpen but time has passed
+        if (
+            draw.phase == DrawPhase.SaleOpen && block.timestamp >= draw.endTime
+        ) {
+            draw.phase = DrawPhase.SaleClosed;
+        }
+
+        // Ensure we're in the correct phase to trigger a draw
+        if (draw.phase != DrawPhase.SaleClosed) {
+            revert InvalidPhase(DrawPhase.SaleClosed);
+        }
+
+        // Request randomness
         draw.phase = DrawPhase.Drawing;
         uint256 requestId = randomness.requestRandomNumber(currentDrawId);
         draw.requestId = requestId;
@@ -230,11 +252,15 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
 
         require(draw.phase == DrawPhase.Drawing, "Invalid phase");
         require(draw.drawId == drawId, "ID mismatch"); // Verify stored ID matches
+        require(randomWords.length > 0, "No random words provided");
 
-        draw.winningNumbers = _selectWinners(
-            randomWords[0],
-            draw.tickets.length
-        );
+        // Check if we have enough tickets to select winners
+        uint256 totalTickets = draw.tickets.length;
+        if (totalTickets < 10) {
+            revert("Insufficient tickets");
+        }
+
+        draw.winningNumbers = _selectWinners(randomWords[0], totalTickets);
 
         // Convert indices to ticket IDs and get owners
         address[] memory winners = new address[](draw.winningNumbers.length);
@@ -244,11 +270,11 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
             winners[i] = ticketNFT.ownerOf(ticketId);
         }
 
-        prizePool.distributePrizes(currentDrawId, winners);
+        prizePool.distributePrizes(drawId, winners);
 
         draw.phase = DrawPhase.Completed;
 
-        emit DrawCompleted(currentDrawId, draw.winningNumbers);
+        emit DrawCompleted(drawId, draw.winningNumbers);
     }
 
     // -----------------------------
@@ -327,12 +353,12 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         // Insertion sort for deterministic output
         for (uint256 i = 1; i < winners.length; i++) {
             uint256 key = winners[i];
-            uint256 j = i - 1;
-            while (j >= 0 && winners[j] > key) {
-                winners[j + 1] = winners[j];
+            int256 j = int256(i) - 1;
+            while (j >= 0 && winners[uint256(j)] > key) {
+                winners[uint256(j + 1)] = winners[uint256(j)];
                 j--;
             }
-            winners[j + 1] = key;
+            winners[uint256(j + 1)] = key;
         }
     }
 

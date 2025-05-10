@@ -9,10 +9,42 @@ import {ILotteryManager} from "../../src/interfaces/ILotteryManager.sol";
  */
 contract MockLotteryManager {
     address public prizePool;
+    uint256 public ticketPrice = 1 ether;
+    uint256 public protocolFee = 200; // 2%
+    uint256 public firstPrize = 7000; // 70%
+    uint256 public secondPrize = 2000; // 20%
+    uint256 public thirdPrize = 1000; // 10%
 
     // We can set the prize pool address for tests that need it
     function setPrizePool(address _prizePool) external {
         prizePool = _prizePool;
+    }
+
+    // Add governance-controlled functions
+    function setTicketPrice(uint256 _ticketPrice) external {
+        ticketPrice = _ticketPrice;
+    }
+
+    function setProtocolFee(uint256 _protocolFee) external {
+        protocolFee = _protocolFee;
+    }
+
+    function updatePrizeDistribution(
+        uint256 _firstPrize,
+        uint256 _secondPrize,
+        uint256 _thirdPrize
+    ) external {
+        firstPrize = _firstPrize;
+        secondPrize = _secondPrize;
+        thirdPrize = _thirdPrize;
+    }
+
+    function prizeDistribution()
+        external
+        view
+        returns (uint256, uint256, uint256)
+    {
+        return (firstPrize, secondPrize, thirdPrize);
     }
 
     // Implement required interface methods without override keyword
@@ -54,10 +86,6 @@ contract MockLotteryManager {
         returns (uint256, uint256, uint256, uint256)
     {
         return (1, block.timestamp, block.timestamp + 1 days, 10);
-    }
-
-    function ticketPrice() external pure returns (uint256) {
-        return 1 ether;
     }
 
     function getTicketOwner(uint256) external view returns (address) {

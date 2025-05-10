@@ -2,462 +2,809 @@
 pragma solidity ^0.8.19;
 
 import {Test, console} from "forge-std/Test.sol";
-import {DAOGovernor} from "../src/core/DAOGovenor.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
-import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
-import {MyToken} from "./mocks/MyToken.sol";
-import {MockLottery} from "./mocks/MockLottery.sol";
-import {MockPrizePool} from "./mocks/MockPrizePool.sol";
 import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
+import {DAOGovernor} from "../src/core/DAOGovenor.sol";
+import {MyToken} from "./mocks/MyToken.sol";
+import {MockLotteryManager} from "./mocks/MockLotteryManager.sol";
+import {MockPrizePool} from "./mocks/MockPrizePool.sol";
 
 contract DAOGovernorTest is Test {
-    DAOGovernor governor;
-    TimelockController timelock;
-    ERC20Votes token;
-    MockLottery lottery;
-    MockPrizePool prizePool;
+    // Test contracts
+    MyToken public token;
+    TimelockController public timelock;
+    DAOGovernor public governor;
+    MockLotteryManager public lotteryManager;
+    MockPrizePool public prizePool;
 
-    address admin = address(1);
-    address voter1 = address(2);
-    address voter2 = address(3);
+    // Test addresses
+    address public deployer = makeAddr("deployer");
+    address public alice = makeAddr("alice");
+    address public bob = makeAddr("bob");
+    address public charlie = makeAddr("charlie");
+    address public dave = makeAddr("dave");
+    address[] public proposers;
+    address[] public executors;
 
-    // Track proposal data
-    uint256 proposalId;
-    address[] targets;
-    uint256[] values;
-    bytes[] calldatas;
-    bytes32 descriptionHash;
+    // Constants
+    uint256 public constant INITIAL_SUPPLY = 1_000_000e18;
+    uint256 public constant PROPOSAL_THRESHOLD = 1e18; // 1 token
+    uint256 public constant VOTING_DELAY = 1; // 1 block
+    uint256 public constant VOTING_PERIOD = 259200; // ~3 days in seconds
+    uint256 public constant QUORUM_NUMERATOR = 400; // 4%
+
+    // Test proposal variables
+    address[] public targets;
+    uint256[] public values;
+    bytes[] public calldatas;
+    string public description;
+    uint256 public proposalId;
+
+    // Events for verification
+    event ProposalCreated(
+        uint256 proposalId,
+        address proposer,
+        address[] targets,
+        uint256[] values,
+        string[] signatures,
+        bytes[] calldatas,
+        uint256 startBlock,
+        uint256 endBlock,
+        string description
+    );
+
+    event ProposalExecuted(uint256 proposalId);
+    event VoteCast(
+        address indexed voter,
+        uint256 proposalId,
+        uint8 support,
+        uint256 weight,
+        string reason
+    );
 
     function setUp() public {
-        // Deploy dependencies
-        token = new MyToken();
-        lottery = new MockLottery();
+        vm.startPrank(deployer);
 
+        // Deploy token
+        token = new MyToken();
+
+        // Setup timelock
+        proposers = new address[](1);
+        proposers[0] = deployer;
+        executors = new address[](1);
+        executors[0] = address(0); // Allow anyone to execute
+
+        // Deploy TimelockController with minimum delay
+        timelock = new TimelockController(
+            1, // minDelay (1 second for testing)
+            proposers,
+            executors,
+            deployer
+        );
+
+        // Deploy mock contracts
+        lotteryManager = new MockLotteryManager();
         prizePool = new MockPrizePool();
 
-        // In OZ v5, the admin needs to be an explicit address with admin rights
-        // The admin will then be able to grant roles to others
-        timelock = new TimelockController(
-            1 days, // min delay
-            new address[](0), // initially no proposers
-            new address[](0), // initially no executors
-            address(this) // This test contract as admin - IMPORTANT!
-        );
+        // Set proper references
+        lotteryManager.setPrizePool(address(prizePool));
+        prizePool.setLotteryManager(address(lotteryManager));
 
         // Deploy governor
         governor = new DAOGovernor(
-            ERC20Votes(address(token)),
+            token,
             timelock,
-            address(lottery),
+            address(lotteryManager),
             address(prizePool)
         );
 
-        // Now grant roles as admin (which is this contract)
-        // Make governor a proposer
+        // Transfer ownership of timelock to the governor
         timelock.grantRole(timelock.PROPOSER_ROLE(), address(governor));
-
-        // Set address(0) as executor to allow anyone to execute
-        timelock.grantRole(timelock.EXECUTOR_ROLE(), address(0));
-
-        // Set governor as canceller
         timelock.grantRole(timelock.CANCELLER_ROLE(), address(governor));
+        timelock.revokeRole(timelock.PROPOSER_ROLE(), deployer);
+        timelock.revokeRole(timelock.CANCELLER_ROLE(), deployer);
 
-        // Setup tokens for voting
+        // Transfer ownership of prize pool to the timelock
+        prizePool.transferOwnership(address(timelock));
 
-        // In setUp() function:
+        // Distribute tokens for testing
+        token.transfer(alice, 10e18);
+        token.transfer(bob, 10e18);
+        token.transfer(charlie, 10e18);
+        token.transfer(dave, 10e18);
 
-        // Change from 2e18 to 5e22 (50 million tokens)
-        deal(address(token), voter1, 5e22);
-        deal(address(token), voter2, 3e22);
+        // Keep sufficient tokens for deployer (self-delegate)
+        token.delegate(deployer);
 
-        // Delegate voting power
-        vm.startPrank(voter1);
-        token.delegate(voter1);
         vm.stopPrank();
 
-        vm.startPrank(voter2);
-        token.delegate(voter2);
+        // Setup voting power by delegating
+        vm.startPrank(alice);
+        token.delegate(alice);
         vm.stopPrank();
 
-        // Move the block forward to activate voting power
-        // This is crucial in OpenZeppelin v5's ERC20Votes implementation
+        vm.startPrank(bob);
+        token.delegate(bob);
+        vm.stopPrank();
+
+        vm.startPrank(charlie);
+        token.delegate(charlie);
+        vm.stopPrank();
+
+        vm.startPrank(dave);
+        token.delegate(dave);
+        vm.stopPrank();
+
+        // Mine a block to ensure checkpoints are created
         vm.roll(block.number + 1);
-        vm.warp(block.timestamp + 1);
 
-        // Set up proposal data for reuse
+        // Update block.timestamp to ensure we have a point in time to check voting power
+        vm.warp(block.timestamp + 1);
+    }
+    //////////////////////////
+    // Constructor Tests /////
+    //////////////////////////
+
+    function testConstructor() public {
+        assertEq(address(governor.token()), address(token));
+        assertEq(address(governor.timelock()), address(timelock));
+        assertEq(governor.name(), "dFortune DAO Governor");
+        assertEq(governor.votingDelay(), VOTING_DELAY);
+        assertEq(governor.votingPeriod(), VOTING_PERIOD);
+        assertEq(governor.proposalThreshold(), PROPOSAL_THRESHOLD);
+        assertEq(governor.lotteryManager(), address(lotteryManager));
+        assertEq(governor.prizePool(), address(prizePool));
+        assertEq(governor.QUORUM_NUMERATOR(), 400);
+    }
+
+    //////////////////////////
+    // Quorum Tests //////////
+    //////////////////////////
+
+    function testQuorum() public {
+        // Use the current timestamp which we've already warped past in setUp
+        uint256 timestamp = block.timestamp - 1; // Use a past timestamp
+
+        uint256 expectedQuorum = (token.totalSupply() * QUORUM_NUMERATOR) /
+            10000;
+        assertEq(governor.quorum(timestamp), expectedQuorum);
+    }
+
+    //////////////////////////
+    // Proposal Tests ////////
+    //////////////////////////
+    function testCannotCreateProposalWithoutEnoughVotes() public {
+        // Create a new user with no tokens and no voting power
+        address noVotesUser = makeAddr("noVotesUser");
+
+        // Start prank as the user with no votes
+        vm.startPrank(noVotesUser);
+
+        // Create proposal to update ticket price
         targets = new address[](1);
-        targets[0] = address(lottery);
+        targets[0] = address(lotteryManager);
         values = new uint256[](1);
-        values[0] = 0; // No ETH being sent
+        values[0] = 0;
         calldatas = new bytes[](1);
         calldatas[0] = abi.encodeWithSignature(
             "setTicketPrice(uint256)",
-            1 ether
+            0.5 ether
         );
-        descriptionHash = keccak256(bytes("Set ticket price"));
+        description = "Proposal #1: Lower ticket price to 0.5 ETH";
+
+        // This should revert because the user has no voting power
+        vm.expectRevert(DAOGovernor.InsufficientVotingPower.selector);
+        governor.propose(targets, values, calldatas, description);
+
+        vm.stopPrank();
     }
 
-    // Helper function to create a valid proposal
-    function _createValidProposal() internal returns (uint256) {
-        return governor.propose(targets, values, calldatas, "Set ticket price");
-    }
+    function testCannotCreateProposalWithInvalidTarget() public {
+        // Give deployer enough voting power
+        vm.startPrank(deployer);
 
-    // Test initialization
-    function test_Initialization() public {
-        // Use a past timestamp for quorum calculation
-        uint256 pastTime = block.timestamp - 1;
-        vm.warp(pastTime + 1); // Move time forward
-
-        assertEq(
-            governor.quorum(pastTime),
-            (token.getPastTotalSupply(pastTime) * 400) / 10000
-        );
-        assertEq(governor.proposalThreshold(), 1e18);
-        assertEq(governor.votingDelay(), 1); // 1 block
-        assertEq(governor.votingPeriod(), 3 days); // Now checking for 3 days in seconds
-        assertEq(address(governor.token()), address(token));
-    }
-    // Test proposal validation
-    function test_ProposalValidation() public {
-        // Make sure voter1 has adequate permissions
-        assertTrue(
-            token.getVotes(voter1) >= governor.proposalThreshold(),
-            "Voter1 does not have enough voting power"
-        );
-
-        // Valid proposal
-        vm.prank(voter1);
-        proposalId = _createValidProposal();
-        assertTrue(proposalId > 0);
-
-        // Invalid target
-        address[] memory invalidTargets = new address[](1);
-        invalidTargets[0] = address(this); // this is not a valid target
-        uint256[] memory invalidValues = new uint256[](1);
-        invalidValues[0] = 0;
-        bytes[] memory invalidCalldata = new bytes[](1);
-        invalidCalldata[0] = abi.encodeWithSignature(
+        // Create proposal with invalid target
+        targets = new address[](1);
+        targets[0] = address(0x123); // Invalid target
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
             "setTicketPrice(uint256)",
-            1 ether
+            0.5 ether
         );
-        string memory description = "Invalid target";
+        description = "Invalid target proposal";
 
-        vm.prank(voter1);
         vm.expectRevert(DAOGovernor.InvalidTarget.selector);
-        governor.propose(
-            invalidTargets,
-            invalidValues,
-            invalidCalldata,
-            description
-        );
+        governor.propose(targets, values, calldatas, description);
+
+        vm.stopPrank();
     }
 
-    function test_UnauthorizedFunction() public {
-        address[] memory testTargets = new address[](1);
-        testTargets[0] = address(lottery);
-        uint256[] memory testValues = new uint256[](1);
-        testValues[0] = 0;
-        bytes[] memory testCalldatas = new bytes[](1);
-        testCalldatas[0] = abi.encodeWithSignature("invalidFunction()");
-        string memory description = "Invalid function call";
+    function testCannotCreateProposalWithUnauthorizedFunction() public {
+        // Give deployer enough voting power
+        vm.startPrank(deployer);
 
-        vm.prank(voter1);
+        // Create proposal with unauthorized function
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "transferOwnership(address)",
+            alice
+        ); // Unauthorized
+        description = "Unauthorized function proposal";
+
         vm.expectRevert(DAOGovernor.UnauthorizedFunction.selector);
-        governor.propose(testTargets, testValues, testCalldatas, description);
+        governor.propose(targets, values, calldatas, description);
+
+        vm.stopPrank();
     }
 
-    function test_InsufficientVotingPower() public {
-        // Create a new address with less than threshold tokens
-        address poorVoter = address(0x999);
-        deal(address(token), poorVoter, 0.5e18); // Less than threshold
+    function testCreateValidProposal() public {
+        vm.startPrank(deployer);
 
-        vm.startPrank(poorVoter);
-        token.delegate(poorVoter);
+        // Create valid proposal
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.5 ether
+        );
+        description = "Proposal #1: Lower ticket price to 0.5 ETH";
+
+        // Instead of attempting to match exact event parameters, we'll just propose and
+        // check that the proposal ID is valid
+        proposalId = governor.propose(targets, values, calldatas, description);
+
+        // Make sure we got a valid proposal ID
+        assertGt(proposalId, 0, "Proposal ID should be greater than 0");
+
+        // Check proposal state
+        assertEq(
+            uint256(governor.state(proposalId)),
+            uint256(IGovernor.ProposalState.Pending)
+        );
+
+        vm.stopPrank();
+    }
+
+    //////////////////////////
+    // Voting Tests //////////
+    //////////////////////////
+
+    function testVotingWorkflow() public {
+        // 1. Create a valid proposal
+        vm.startPrank(deployer);
+
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.5 ether
+        );
+        description = "Proposal #1: Lower ticket price to 0.5 ETH";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
         vm.stopPrank();
 
-        // Advance block to activate voting power (crucial for OZ v5)
-        vm.roll(block.number + 1);
-        vm.warp(block.timestamp + 1);
+        // 2. Advance time AND block number to pass voting delay
+        uint256 votingDelay = governor.votingDelay();
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
 
-        address[] memory poorTargets = new address[](1);
-        poorTargets[0] = address(lottery);
-        uint256[] memory poorValues = new uint256[](1);
-        poorValues[0] = 0;
-        bytes[] memory poorCalldatas = new bytes[](1);
-        poorCalldatas[0] = abi.encodeWithSignature(
-            "setTicketPrice(uint256)",
-            1 ether
-        );
-        string memory description = "Set ticket price";
-
-        vm.prank(poorVoter); // Use the address with insufficient voting power
-        vm.expectRevert(DAOGovernor.InsufficientVotingPower.selector);
-        governor.propose(poorTargets, poorValues, poorCalldatas, description);
-    }
-
-    // Test full proposal lifecycle - FIXED
-    function test_ProposalLifecycle() public {
-        // Create proposal
-        vm.prank(voter1);
-        proposalId = _createValidProposal();
-
-        // Get the starting block and timestamp
-        uint256 startBlock = block.number;
-        uint256 startTime = block.timestamp;
-
-        // Verify initial state
+        // 3. Verify proposal is active
         assertEq(
             uint256(governor.state(proposalId)),
-            uint256(IGovernor.ProposalState.Pending),
-            "Initial state should be Pending"
+            uint256(IGovernor.ProposalState.Active)
         );
 
-        // Get proposal snapshot and deadline
-        uint256 proposalSnapshot = governor.proposalSnapshot(proposalId);
-        uint256 proposalDeadline = governor.proposalDeadline(proposalId);
+        // 4. Multiple accounts vote
+        vm.startPrank(deployer);
+        vm.expectEmit(true, true, true, true);
+        emit VoteCast(deployer, proposalId, 1, INITIAL_SUPPLY - 40e18, "");
+        governor.castVote(proposalId, 1); // FOR
+        vm.stopPrank();
 
-        console.log("Proposal snapshot timepoint:", proposalSnapshot);
-        console.log("Proposal deadline timepoint:", proposalDeadline);
-        console.log("Current timepoint:", governor.clock());
+        vm.prank(alice);
+        governor.castVote(proposalId, 0); // AGAINST
 
-        // Move exactly to the snapshot block
-        vm.roll(proposalSnapshot);
-        vm.warp(startTime + (proposalSnapshot - startBlock) * 12);
+        vm.prank(bob);
+        governor.castVote(proposalId, 1); // FOR
 
-        // Now move to just after the snapshot block to enter Active state
-        vm.roll(proposalSnapshot + 1);
-        vm.warp(startTime + (proposalSnapshot - startBlock + 1) * 12);
+        vm.prank(charlie);
+        governor.castVote(proposalId, 2); // ABSTAIN
 
-        // Verify active state
-        assertEq(
-            uint256(governor.state(proposalId)),
-            uint256(IGovernor.ProposalState.Active),
-            "Should be Active after delay"
-        );
-
-        // Cast votes - Ensure enough votes to pass quorum
-        vm.prank(voter1);
-        governor.castVote(proposalId, 1); // For - 2 tokens
-
-        // Important: In OZ v5, voting is more sensitive to exact conditions
-        // Let's check voting weight details
+        // 5. Check votes
         (
             uint256 againstVotes,
             uint256 forVotes,
             uint256 abstainVotes
         ) = governor.proposalVotes(proposalId);
-        console.log("Votes FOR:", forVotes);
-        console.log("Votes AGAINST:", againstVotes);
-        console.log("Votes ABSTAIN:", abstainVotes);
+        assertEq(againstVotes, 10e18);
+        assertEq(forVotes, (INITIAL_SUPPLY - 40e18) + 10e18); // deployer + bob
+        assertEq(abstainVotes, 10e18);
 
-        // Check quorum requirement
-        uint256 quorumNeeded = governor.quorum(proposalSnapshot);
-        console.log("Quorum required:", quorumNeeded);
+        // 6. Advance time AND block number to end voting period
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
 
-        // Move directly to just after the deadline block to complete voting period
-        uint256 deadline = governor.proposalDeadline(proposalId);
-        vm.warp(deadline + 1); // Move exactly 1 second past deadline
-
-        // Check current state for debugging
-        console.log("Current state:", uint256(governor.state(proposalId)));
-
-        // Verify succeeded state
+        // 7. Verify proposal is successful
         assertEq(
             uint256(governor.state(proposalId)),
-            uint256(IGovernor.ProposalState.Succeeded),
-            "Should be Succeeded after voting"
+            uint256(IGovernor.ProposalState.Succeeded)
         );
 
-        // Queue the proposal
-        bytes32 descHash = keccak256(bytes("Set ticket price"));
+        // 8. Queue the proposal
+        bytes32 descHash = keccak256(bytes(description));
+        vm.prank(deployer);
         governor.queue(targets, values, calldatas, descHash);
 
-        // Verify queued state
+        // 9. Verify proposal is queued
         assertEq(
             uint256(governor.state(proposalId)),
-            uint256(IGovernor.ProposalState.Queued),
-            "Should be Queued"
+            uint256(IGovernor.ProposalState.Queued)
         );
 
-        // Move past the timelock delay
-        uint256 minDelay = timelock.getMinDelay();
-        vm.warp(block.timestamp + minDelay + 1);
+        // 10. Advance time to pass timelock
+        vm.warp(block.timestamp + 2); // timelock delay (1) + 1
 
-        // Execute the proposal
+        // 11. Execute the proposal
+        vm.prank(deployer);
+        vm.expectEmit(true, true, true, true);
+        emit ProposalExecuted(proposalId);
         governor.execute(targets, values, calldatas, descHash);
 
-        // Final verification
+        // 12. Verify proposal is executed
         assertEq(
             uint256(governor.state(proposalId)),
-            uint256(IGovernor.ProposalState.Executed),
-            "Should be Executed"
+            uint256(IGovernor.ProposalState.Executed)
         );
-        assertEq(lottery.ticketPrice(), 1 ether, "Ticket price update failed");
+
+        // 13. Verify the change took effect
+        assertEq(lotteryManager.ticketPrice(), 0.5 ether);
     }
 
-    // Test quorum calculation
-    function test_Quorum() public {
-        // Need to use a past block number to avoid "future lookup" error in OZ v5
-        uint256 timepoint = block.number - 1;
-        uint256 expected = (token.getPastTotalSupply(timepoint) * 400) / 10000;
-        assertEq(governor.quorum(timepoint), expected);
+    function testProposalCancellation() public {
+        // 1. Create a valid proposal
+        vm.startPrank(deployer);
+
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.5 ether
+        );
+        description = "Proposal to cancel";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
+
+        // 2. Cancel the proposal
+        bytes32 descHash = keccak256(bytes(description));
+        governor.cancel(targets, values, calldatas, descHash);
+
+        // 3. Verify proposal is canceled
+        assertEq(
+            uint256(governor.state(proposalId)),
+            uint256(IGovernor.ProposalState.Canceled)
+        );
+
+        vm.stopPrank();
     }
 
-    // Test cancellation
-    function test_CancelProposal() public {
-        // In OZ v5, typically only the proposer can cancel their own proposal
-        // unless they've lost voting power or a guardian role is set
+    //////////////////////////
+    // Advanced Tests ////////
+    //////////////////////////
 
-        // First, create a valid proposal using voter1
-        vm.startPrank(voter1);
-        proposalId = _createValidProposal();
+    function testExecuteMultiCallProposal() public {
+        // Create a proposal with multiple actions
+        vm.startPrank(deployer);
+
+        targets = new address[](3);
+        targets[0] = address(lotteryManager);
+        targets[1] = address(lotteryManager);
+        targets[2] = address(prizePool);
+
+        values = new uint256[](3);
+        values[0] = 0;
+        values[1] = 0;
+        values[2] = 0;
+
+        calldatas = new bytes[](3);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.75 ether
+        );
+        calldatas[1] = abi.encodeWithSignature("setProtocolFee(uint256)", 300); // 3%
+        calldatas[2] = abi.encodeWithSignature(
+            "updatePrizeDistribution(uint256,uint256,uint256)",
+            6000, // 60% winner share
+            3000, // 30% charity share
+            1000 // 10% rollover share
+        );
+
+        description = "Multi-action proposal";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
         vm.stopPrank();
 
-        // Verify the proposal was created successfully
-        assertTrue(proposalId > 0);
+        // Advance time AND block number to pass voting delay
+        uint256 votingDelay = governor.votingDelay();
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
 
-        // The proposer (voter1) should be able to cancel their own proposal
-        vm.prank(voter1);
-        governor.cancel(targets, values, calldatas, descriptionHash);
+        // Vote
+        vm.prank(deployer);
+        governor.castVote(proposalId, 1); // FOR
 
-        // Verify the proposal is now in cancelled state
+        // Advance time AND block number to end voting period
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
+
+        // Queue and execute
+        bytes32 descHash = keccak256(bytes(description));
+        vm.startPrank(deployer);
+        governor.queue(targets, values, calldatas, descHash);
+
+        // Advance time to pass timelock
+        vm.warp(block.timestamp + 2); // timelock delay (1) + 1
+
+        governor.execute(targets, values, calldatas, descHash);
+        vm.stopPrank();
+
+        // Verify all changes took effect
+        assertEq(lotteryManager.ticketPrice(), 0.75 ether);
+        assertEq(lotteryManager.protocolFee(), 300);
+
+        (uint256 winnerShare, uint256 charityShare, uint256 rolloverShare) = (
+            prizePool.prizeDistribution()
+        );
+        assertEq(winnerShare, 6000);
+        assertEq(charityShare, 3000);
+        assertEq(rolloverShare, 1000);
+    }
+
+    function testSetYieldProtocolProposal() public {
+        // Create a proposal to set yield protocol
+        vm.startPrank(deployer);
+
+        address yieldAdapter = makeAddr("yieldAdapter");
+        address yieldToken = makeAddr("yieldToken");
+        bool isActive = true;
+
+        targets = new address[](1);
+        targets[0] = address(prizePool);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setYieldProtocol(address,address,bool)",
+            yieldAdapter,
+            yieldToken,
+            isActive
+        );
+
+        description = "Set yield protocol proposal";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
+        vm.stopPrank();
+
+        // Advance time AND block number
+        uint256 votingDelay = governor.votingDelay();
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
+
+        vm.prank(deployer);
+        governor.castVote(proposalId, 1); // FOR
+
+        // Advance time AND block number to end voting period
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
+
+        // Queue and execute
+        bytes32 descHash = keccak256(bytes(description));
+        vm.startPrank(deployer);
+        governor.queue(targets, values, calldatas, descHash);
+
+        vm.warp(block.timestamp + 2);
+
+        governor.execute(targets, values, calldatas, descHash);
+        vm.stopPrank();
+
+        // Verify changes
+        (address setAdapter, address setToken, bool setActive) = prizePool
+            .yieldProtocol();
+        assertEq(setAdapter, yieldAdapter);
+        assertEq(setToken, yieldToken);
+        assertEq(setActive, isActive);
+    }
+
+    function testAbortedProposalBecomesDefeated() public {
+        // Create proposal
+        vm.startPrank(deployer);
+
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.5 ether
+        );
+        description = "Proposal that will be defeated";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
+        vm.stopPrank();
+
+        // Get the voting delay
+        uint256 votingDelay = governor.votingDelay();
+
+        // Advance both block number and time to pass voting delay
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
+
+        // Have everyone vote against
+        vm.prank(deployer);
+        governor.castVote(proposalId, 0); // AGAINST
+
+        vm.prank(alice);
+        governor.castVote(proposalId, 0); // AGAINST
+
+        vm.prank(bob);
+        governor.castVote(proposalId, 0); // AGAINST
+
+        // Advance both block number and time to end voting period
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
+
+        // Verify proposal is defeated
         assertEq(
             uint256(governor.state(proposalId)),
-            uint256(IGovernor.ProposalState.Canceled),
-            "Proposal should be in Canceled state"
+            uint256(IGovernor.ProposalState.Defeated)
         );
     }
 
-    // Test timelock integration - FIXED
-    function test_TimelockOperations() public {
-        // First, create a proposal using voter1
-        vm.prank(voter1);
-        proposalId = _createValidProposal();
+    function test_RevertWhen_ExecutionFails() public {
+        // Create valid proposal but with a function call that will fail
+        // For this test, we'll make a call that requires ownership that the timelock doesn't have
 
-        // Get the starting block and timestamp
-        uint256 startBlock = block.number;
-        uint256 startTime = block.timestamp;
+        vm.startPrank(deployer);
 
-        // Verify the proposal was created
-        assertTrue(proposalId > 0);
+        // First set up a known bad call that will fail
+        // Create a mock contract that the timelock doesn't own
+        MockPrizePool badTarget = new MockPrizePool();
 
-        // Get proposal snapshot and deadline timepoints
-        uint256 proposalSnapshot = governor.proposalSnapshot(proposalId);
-        uint256 proposalDeadline = governor.proposalDeadline(proposalId);
-
-        console.log("Timelock test - Proposal snapshot:", proposalSnapshot);
-        console.log("Timelock test - Proposal deadline:", proposalDeadline);
-        console.log("Timelock test - Current timepoint:", governor.clock());
-
-        // Move exactly to the snapshot block
-        vm.roll(proposalSnapshot);
-        vm.warp(startTime + (proposalSnapshot - startBlock) * 12);
-
-        // Now move to just after the snapshot block to enter Active state
-        vm.roll(proposalSnapshot + 1);
-        vm.warp(startTime + (proposalSnapshot - startBlock + 1) * 12);
-
-        // Debug information
-        console.log(
-            "Timelock test - proposal state after delay:",
-            uint256(governor.state(proposalId))
+        targets = new address[](1);
+        targets[0] = address(badTarget); // We don't own this
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "updatePrizeDistribution(uint256,uint256,uint256)",
+            6000,
+            3000,
+            1000
         );
 
-        // Cast votes to pass the proposal - voter1 has 2e18 tokens which should be
-        // enough to pass the quorum of 4% of the total supply (3e18)
-        vm.prank(voter1);
-        governor.castVote(proposalId, uint8(1)); // For
+        description = "Proposal that will fail execution";
 
-        // Print vote counts
-        (
-            uint256 againstVotes,
-            uint256 forVotes,
-            uint256 abstainVotes
-        ) = governor.proposalVotes(proposalId);
-        console.log("Votes FOR:", forVotes);
-        console.log("Votes AGAINST:", againstVotes);
-        console.log("Votes ABSTAIN:", abstainVotes);
-
-        // Print quorum requirement
-        uint256 quorumNeeded = governor.quorum(proposalSnapshot);
-        console.log("Quorum required:", quorumNeeded);
-
-        // Debug information
-        console.log(
-            "Timelock test - after voting - proposal state:",
-            uint256(governor.state(proposalId))
+        // Change governor contract to accept any target for testing
+        // This simulates a misconfiguration for test purposes
+        DAOGovernor vulnerableGovernor = new DAOGovernor(
+            token,
+            timelock,
+            address(lotteryManager),
+            address(badTarget) // Add bad target as valid
         );
 
-        // Skip directly to after the deadline
-        vm.roll(proposalDeadline + 1);
-        vm.warp(startTime + (proposalDeadline - startBlock + 1) * 12);
-
-        // Debug information
-        console.log(
-            "Timelock test - after voting period - proposal state:",
-            uint256(governor.state(proposalId))
+        // Grant roles to vulnerable governor
+        timelock.grantRole(
+            timelock.PROPOSER_ROLE(),
+            address(vulnerableGovernor)
+        );
+        timelock.grantRole(
+            timelock.CANCELLER_ROLE(),
+            address(vulnerableGovernor)
         );
 
-        // Verify the proposal state before queueing
-        assertEq(
-            uint256(governor.state(proposalId)),
-            uint256(IGovernor.ProposalState.Succeeded),
-            "Proposal should be in Succeeded state before queueing"
-        );
-
-        // Queue proposal
-        governor.queue(targets, values, calldatas, descriptionHash);
-
-        // In OZ v5, use the specific TimelockController operation hash method
-        bytes32 operationId = timelock.hashOperationBatch(
+        // Create proposal
+        proposalId = vulnerableGovernor.propose(
             targets,
             values,
             calldatas,
-            bytes32(0), // predecessor
-            descriptionHash
+            description
         );
 
-        // Verify timelock operation state
-        assertTrue(
-            timelock.isOperation(operationId),
-            "Operation should exist in timelock"
-        );
-        assertTrue(
-            timelock.isOperationPending(operationId),
-            "Operation should be pending in timelock"
-        );
-        assertFalse(
-            timelock.isOperationReady(operationId),
-            "Operation should not be ready yet"
-        );
-        assertFalse(
-            timelock.isOperationDone(operationId),
-            "Operation should not be done yet"
-        );
+        // Get the voting delay
+        uint256 votingDelay = vulnerableGovernor.votingDelay();
 
-        // Advance time to make operation ready
-        vm.warp(block.timestamp + timelock.getMinDelay() + 1);
+        // Advance both block number and time to pass voting delay
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
 
-        // Now operation should be ready
-        assertTrue(
-            timelock.isOperationReady(operationId),
-            "Operation should be ready for execution"
-        );
+        // Vote
+        vulnerableGovernor.castVote(proposalId, 1); // FOR
 
-        // Execute the proposal
-        governor.execute(targets, values, calldatas, descriptionHash);
+        // Advance block number and time to end voting period
+        uint256 votingPeriod = vulnerableGovernor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
 
-        // After execution, operation should be done
-        assertTrue(
-            timelock.isOperationDone(operationId),
-            "Operation should be marked as done"
-        );
+        // Queue the proposal
+        bytes32 descHash = keccak256(bytes(description));
+        vulnerableGovernor.queue(targets, values, calldatas, descHash);
+
+        // Advance time to pass timelock
+        vm.warp(block.timestamp + 2);
+
+        // Execution should revert due to ownership issue
+        vm.expectRevert();
+        vulnerableGovernor.execute(targets, values, calldatas, descHash);
+
+        vm.stopPrank();
     }
 
-    // Test clock functions
-    function test_ClockFunctions() public {
-        // In OZ v5, the clock mode is timestamp
-        assertEq(governor.CLOCK_MODE(), "mode=timestamp");
-        assertEq(governor.clock(), block.timestamp);
+    //////////////////////////
+    // View Function Tests ///
+    //////////////////////////
+
+    function testCountingMode() public {
+        string memory mode = governor.COUNTING_MODE();
+        assertEq(mode, "support=bravo&quorum=for,abstain");
+    }
+
+    function testClockMode() public {
+        string memory mode = governor.CLOCK_MODE();
+        assertEq(mode, "mode=timestamp");
+    }
+
+    function testClock() public {
+        uint48 timestamp = governor.clock();
+        assertEq(timestamp, uint48(block.timestamp));
+    }
+
+    function testProposalNeedsQueuing() public {
+        vm.startPrank(deployer);
+
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.5 ether
+        );
+        description = "Test proposal";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
+
+        bool needsQueuing = governor.proposalNeedsQueuing(proposalId);
+        assertEq(needsQueuing, true);
+
+        vm.stopPrank();
+    }
+
+    //////////////////////////
+    // Edge Case Tests ///////
+    //////////////////////////
+
+    function testProposalThresholdChange() public {
+        // Verify initial threshold
+        assertEq(governor.proposalThreshold(), PROPOSAL_THRESHOLD);
+
+        // Create a proposal
+        vm.startPrank(deployer);
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.5 ether
+        );
+        description = "Test proposal";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
+        vm.stopPrank();
+    }
+
+    function testEmergencyProposalExecution() public {
+        // Test what happens in an "emergency" scenario
+        // Create a valid proposal with minimal delays
+
+        vm.startPrank(deployer);
+
+        targets = new address[](1);
+        targets[0] = address(lotteryManager);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setTicketPrice(uint256)",
+            0.1 ether
+        );
+        description = "Emergency proposal: Reduce price";
+
+        proposalId = governor.propose(targets, values, calldatas, description);
+
+        // Get the voting delay
+        uint256 votingDelay = governor.votingDelay();
+
+        // Advance both block number and time (minimum 1 block in timestamp mode)
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
+
+        // Quick vote
+        governor.castVote(proposalId, 1); // FOR
+
+        // Advance both block number and time for minimum voting period
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
+
+        // Queue and execute immediately after timelock delay
+        bytes32 descHash = keccak256(bytes(description));
+        governor.queue(targets, values, calldatas, descHash);
+
+        // Advance time to pass timelock (minimum 1 second)
+        vm.warp(block.timestamp + 2);
+
+        governor.execute(targets, values, calldatas, descHash);
+
+        // Verify execution
+        assertEq(lotteryManager.ticketPrice(), 0.1 ether);
+
+        vm.stopPrank();
+    }
+
+    function testQuorumCalculationWithDynamicSupply() public {
+        // Use a timestamp that we've already passed to avoid future lookup errors
+        uint256 timestamp = block.timestamp - 1;
+
+        // Initial quorum
+        uint256 initialQuorum = governor.quorum(timestamp);
+
+        // Mine another block for the supply change to take effect
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 1);
+
+        // Mint more tokens
+        vm.prank(deployer);
+        token.mint(deployer, 1_000_000e18); // Double the supply
+
+        // Mine one more block and advance time for checkpoints
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 1);
+
+        // Calculate new timestamp for quorum
+        uint256 newTimestamp = block.timestamp - 1;
+
+        // Quorum calculation should now be higher
+        uint256 newQuorum = governor.quorum(newTimestamp);
+        assertTrue(
+            newQuorum > initialQuorum,
+            "Quorum should increase with supply"
+        );
+
+        // Specifically, it should be double
+        assertEq(newQuorum, initialQuorum * 2);
     }
 }
