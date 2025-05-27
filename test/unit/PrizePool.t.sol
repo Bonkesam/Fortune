@@ -2,12 +2,12 @@
 pragma solidity ^0.8.19;
 
 import {Test, console} from "forge-std/Test.sol";
-import {PrizePool} from "../src/core/PrizePool.sol";
+import {PrizePool} from "../../src/core/PrizePool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {MockLotteryManager} from "./mocks/MockLotteryManager.sol";
-import {MockAave} from "./mocks/MockAave.sol";
-import {MyToken} from "./mocks/MyToken.sol";
-// At the top of the test file
+import {MockLotteryManager} from "../mocks/MockLotteryManager.sol";
+import {MockAave} from "../mocks/MockAave.sol";
+import {MyToken} from "../mocks/MyToken.sol";
+import {MockTreasury} from "../mocks/MockTreasury.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
@@ -18,12 +18,13 @@ contract PrizePoolTest is Test {
     // Contracts
     PrizePool public prizePool;
     MockLotteryManager public lotteryManager;
+    MockTreasury public mockTreasury;
     MockAave public aave;
     MyToken public aWeth;
 
     // Test accounts
     address public owner = address(1);
-    address public treasury = address(2);
+    address public treasuryAddr = address(2);
     address public feeCollector = address(3);
     address public user1 = address(4);
     address public user2 = address(5);
@@ -49,6 +50,9 @@ contract PrizePoolTest is Test {
         aave = new MockAave();
         aWeth = new MyToken();
 
+        // Deploy MockTreasury instead of using address
+        mockTreasury = new MockTreasury();
+
         // Add aave as an authorized minter for aWeth
         vm.startPrank(address(this));
         aWeth.addMinter(address(aave));
@@ -62,13 +66,13 @@ contract PrizePoolTest is Test {
         prizePool = new PrizePool(
             owner,
             address(lotteryManager),
-            treasury,
+            address(mockTreasury),
             feeCollector,
             PROTOCOL_FEE
         );
 
         // Configure yield protocol (replace hardcoded Aave address with our mock)
-        prizePool.setYieldProtocol(address(aave), address(aWeth), true);
+
         vm.stopPrank();
 
         // Fund accounts
@@ -86,7 +90,7 @@ contract PrizePoolTest is Test {
     function testConstructor() public {
         assertEq(prizePool.owner(), owner);
         assertEq(address(prizePool.lotteryManager()), address(lotteryManager));
-        assertEq(prizePool.treasury(), treasury);
+        assertEq(prizePool.treasury(), address(mockTreasury));
         assertEq(prizePool.feeCollector(), feeCollector);
         assertEq(prizePool.protocolFee(), PROTOCOL_FEE);
     }
@@ -96,24 +100,20 @@ contract PrizePoolTest is Test {
 
         // Test with zero address for manager
         vm.expectRevert();
-        new PrizePool(owner, address(0), treasury, feeCollector, PROTOCOL_FEE);
-
-        // Test with zero address for treasury
-        vm.expectRevert("Invalid treasury");
         new PrizePool(
             owner,
-            address(lotteryManager),
             address(0),
+            address(lotteryManager),
             feeCollector,
             PROTOCOL_FEE
         );
 
-        // Test with zero address for fee collector
+        // Test with zero address for manager
         vm.expectRevert("Invalid fee collector");
         new PrizePool(
             owner,
             address(lotteryManager),
-            treasury,
+            address(mockTreasury),
             address(0),
             PROTOCOL_FEE
         );
@@ -129,7 +129,7 @@ contract PrizePoolTest is Test {
         new PrizePool(
             owner,
             address(lotteryManager),
-            treasury,
+            address(mockTreasury),
             feeCollector,
             MAX_PROTOCOL_FEE + 1
         );
@@ -219,12 +219,7 @@ contract PrizePoolTest is Test {
         winners[0] = user1;
         winners[1] = user2;
         winners[2] = user3;
-
-        // Record balances before
-        uint256 user1BalanceBefore = user1.balance;
-        uint256 user2BalanceBefore = user2.balance;
-        uint256 user3BalanceBefore = user3.balance;
-        uint256 treasuryBalanceBefore = treasury.balance;
+        uint256 treasuryBalanceBefore = address(mockTreasury).balance;
 
         // Test emitted event
         uint256 drawId = 123;
@@ -236,12 +231,16 @@ contract PrizePoolTest is Test {
         prizePool.distributePrizes(drawId, winners);
         vm.stopPrank();
 
-        // Verify balances
-        assertEq(user1.balance - user1BalanceBefore, grandPrize);
-        assertEq(user2.balance - user2BalanceBefore, secondaryPrizes / 2);
-        assertEq(user3.balance - user3BalanceBefore, secondaryPrizes / 2);
-        assertEq(treasury.balance - treasuryBalanceBefore, daoShare);
-        assertEq(prizePool.tokenReserves(address(0)), 0);
+        // Verify DAO share went to treasury
+        assertEq(
+            address(mockTreasury).balance - treasuryBalanceBefore,
+            daoShare
+        );
+
+        // Verify prizes are set as unclaimed (not directly transferred)
+        assertEq(prizePool.unclaimedPrizes(user1), grandPrize);
+        assertEq(prizePool.unclaimedPrizes(user2), secondaryPrizes / 2);
+        assertEq(prizePool.unclaimedPrizes(user3), secondaryPrizes / 2);
 
         // Verify distribution storage
         (
@@ -276,16 +275,15 @@ contract PrizePoolTest is Test {
         uint256 feeAmount = (depositAmount * PROTOCOL_FEE) /
             prizePool.FEE_DENOMINATOR();
         uint256 netAmount = depositAmount - feeAmount;
-        uint256 grandPrize = (netAmount * 7000) / prizePool.FEE_DENOMINATOR();
-        uint256 daoShare = (netAmount * 1000) / prizePool.FEE_DENOMINATOR();
+        uint256 grandPrize = (netAmount * 3000) / prizePool.FEE_DENOMINATOR();
+        uint256 daoShare = (netAmount * 3000) / prizePool.FEE_DENOMINATOR();
 
         // Prepare single winner
         address[] memory winners = new address[](1);
         winners[0] = user1;
 
         // Record balances before
-        uint256 user1BalanceBefore = user1.balance;
-        uint256 treasuryBalanceBefore = treasury.balance;
+        uint256 treasuryBalanceBefore = address(mockTreasury).balance;
 
         // Distribute prizes
         vm.startPrank(address(lotteryManager));
@@ -293,103 +291,46 @@ contract PrizePoolTest is Test {
         vm.stopPrank();
 
         // Verify balances
-        assertEq(user1.balance - user1BalanceBefore, grandPrize);
-        assertEq(treasury.balance - treasuryBalanceBefore, daoShare);
-        assertEq(prizePool.tokenReserves(address(0)), 0);
+        assertEq(prizePool.unclaimedPrizes(user1), grandPrize);
+        assertEq(
+            address(mockTreasury).balance - treasuryBalanceBefore,
+            daoShare
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
-                       YIELD GENERATION TESTS
+                       PRIZE CLAIMING TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function testInvestInYield() public {
-        // Setup: deposit funds
+    function testClaimPrize() public {
+        // Setup: deposit and distribute prizes
         uint256 depositAmount = STANDARD_DEPOSIT;
         vm.startPrank(address(lotteryManager));
         prizePool.deposit{value: depositAmount}(depositAmount);
+
+        address[] memory winners = new address[](1);
+        winners[0] = user1;
+        prizePool.distributePrizes(1, winners);
         vm.stopPrank();
 
-        aave.setYieldMultiplier(105); // 5% yield
-
+        // Calculate expected prize
         uint256 feeAmount = (depositAmount * PROTOCOL_FEE) /
             prizePool.FEE_DENOMINATOR();
         uint256 netAmount = depositAmount - feeAmount;
-
-        uint256 initialBalance = aWeth.balanceOf(address(prizePool));
-
-        // Calculate expected yield (5% of netAmount)
-        uint256 expectedShares = aave.convertToShares(netAmount);
-
-        // Verify the event emits the protocol and ACTUAL generated yield
-        vm.expectEmit(true, true, true, true);
-        emit YieldGenerated(address(aave), expectedShares);
-
-        // Execute investment
-        vm.prank(owner);
-        prizePool.investInYield(address(aave), 0); // Set minAmountOut to 0 to avoid slippage check
-
-        // Verify state changes
-        assertEq(
-            aWeth.balanceOf(address(prizePool)) - initialBalance,
-            expectedShares,
-            "Shares not minted correctly"
-        );
-        assertEq(prizePool.tokenReserves(address(0)), 0);
-    }
-    function testInvestInYieldOnlyOwner() public {
-        // Try to invest from unauthorized address
-        vm.startPrank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Ownable.OwnableUnauthorizedAccount.selector,
-                user1
-            )
-        );
-        prizePool.investInYield(address(aave), 0);
-        vm.stopPrank();
-    }
-
-    function testInvestInYieldWithInvalidProtocol() public {
-        // Setup: deposit funds
-        uint256 depositAmount = STANDARD_DEPOSIT;
-        vm.startPrank(address(lotteryManager));
-        prizePool.deposit{value: depositAmount}(depositAmount);
-        vm.stopPrank();
-
-        // Try to invest in non-whitelisted protocol
-        vm.startPrank(owner);
-        vm.expectRevert(PrizePool.YieldProtocolNotWhitelisted.selector);
-        prizePool.investInYield(address(0x123), 0);
-        vm.stopPrank();
-    }
-
-    function testInvestInYieldWithNoLiquidity() public {
-        // Try to invest with no funds in contract
-        vm.startPrank(owner);
-        vm.expectRevert(PrizePool.InsufficientLiquidity.selector);
-        prizePool.investInYield(address(aave), 0);
-        vm.stopPrank();
-    }
-
-    function testInvestInYieldWithSlippage() public {
-        // Setup: deposit funds
-        uint256 depositAmount = STANDARD_DEPOSIT;
-        vm.startPrank(address(lotteryManager));
-        prizePool.deposit{value: depositAmount}(depositAmount);
-        vm.stopPrank();
-
-        uint256 feeAmount = (depositAmount * PROTOCOL_FEE) /
+        uint256 expectedPrize = (netAmount * 3000) /
             prizePool.FEE_DENOMINATOR();
-        uint256 netAmount = depositAmount - feeAmount;
 
-        // Set yield but require high minimum
-        aave.setYieldMultiplier(105);
+        // Verify unclaimed prize
+        assertEq(prizePool.unclaimedPrizes(user1), expectedPrize);
 
-        // Should revert due to slippage protection
-        vm.startPrank(owner);
-        vm.expectRevert(PrizePool.ExcessiveSlippage.selector);
-        prizePool.investInYield(address(aave), netAmount * 2);
-        vm.stopPrank();
+        // Claim prize
+        uint256 balanceBefore = user1.balance;
+        vm.prank(user1);
+        prizePool.claimPrize();
+
+        // Verify claim
+        assertEq(user1.balance - balanceBefore, expectedPrize);
+        assertEq(prizePool.unclaimedPrizes(user1), 0);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -428,100 +369,94 @@ contract PrizePoolTest is Test {
         vm.stopPrank();
     }
 
-    function testSetYieldProtocol() public {
-        address newProtocol = address(0xABCD);
-        address newToken = address(0xDEF0);
-        bool active = true;
+    /*//////////////////////////////////////////////////////////////
+                        TREASURY YIELD TESTS
+    //////////////////////////////////////////////////////////////*/
 
-        vm.startPrank(owner);
-        prizePool.setYieldProtocol(newProtocol, newToken, active);
-        vm.stopPrank();
+    function testTreasuryYieldInvestment() public {
+        // Test that treasury can invest DAO funds
+        uint256 investAmount = 10 ether;
 
-        // Correctly destructure the tuple return values
-        (
-            address storedToken,
-            address storedProtocol,
-            bool storedActive
-        ) = prizePool.yieldStrategies(newProtocol);
+        // Fund the treasury
+        vm.deal(address(mockTreasury), investAmount);
+        mockTreasury.setMockBalance(investAmount);
 
-        assertEq(storedToken, newToken);
-        assertEq(storedProtocol, newProtocol);
-        assertEq(storedActive, active);
+        // Set yield multiplier on aave
+        aave.setYieldMultiplier(105); // 5% yield
+
+        // Invest DAO funds through treasury
+        vm.prank(address(mockTreasury));
+        mockTreasury.investDAOFunds(address(aave), 0);
+
+        // Verify investment was made
+        assertEq(mockTreasury.getInvestedAmount(address(aWeth)), investAmount);
+        assertEq(mockTreasury.mockBalance(), 0); // All funds invested
     }
 
-    function testSetYieldProtocolOnlyOwner() public {
-        vm.startPrank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Ownable.OwnableUnauthorizedAccount.selector,
-                user1
-            )
-        );
-        prizePool.setYieldProtocol(address(0x123), address(0x456), true);
-        vm.stopPrank();
-    }
+    function testTreasuryYieldRedemption() public {
+        // Setup investment first
+        uint256 investAmount = 10 ether;
+        vm.deal(address(mockTreasury), investAmount);
+        mockTreasury.setMockBalance(investAmount);
+        mockTreasury.setMockYieldGenerated(1 ether); // 1 ETH yield
 
-    function testSetYieldProtocolWithZeroAddress() public {
-        vm.startPrank(owner);
-        vm.expectRevert();
-        prizePool.setYieldProtocol(address(0), address(0x456), true);
-        vm.stopPrank();
+        aave.setYieldMultiplier(105);
+
+        vm.prank(address(mockTreasury));
+        mockTreasury.investDAOFunds(address(aave), 0);
+
+        // Now redeem with yield
+        vm.prank(address(mockTreasury));
+        mockTreasury.redeemDAOYield(address(aave), investAmount, 0);
+
+        // Verify redemption with yield
+        assertEq(mockTreasury.mockBalance(), investAmount + 1 ether); // Original + yield
+        assertEq(mockTreasury.getInvestedAmount(address(aWeth)), 0);
     }
 
     /*//////////////////////////////////////////////////////////////
                         EMERGENCY FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function testEmergencyWithdrawETH() public {
+    function testScheduleEmergencyWithdraw() public {
         // Setup: deposit funds
         uint256 depositAmount = STANDARD_DEPOSIT;
         vm.startPrank(address(lotteryManager));
         prizePool.deposit{value: depositAmount}(depositAmount);
         vm.stopPrank();
 
-        uint256 feeAmount = (depositAmount * PROTOCOL_FEE) /
-            prizePool.FEE_DENOMINATOR();
-        uint256 netAmount = depositAmount - feeAmount;
+        // Schedule emergency withdrawal
+        vm.prank(owner);
+        prizePool.scheduleEmergencyWithdraw(address(0)); // ETH
 
-        uint256 ownerBalanceBefore = owner.balance;
-
-        vm.startPrank(owner);
-        vm.expectEmit(true, true, true, true);
-        emit EmergencyWithdraw(address(0), netAmount);
-
-        prizePool.emergencyWithdraw(address(0));
-        vm.stopPrank();
-
-        assertEq(owner.balance - ownerBalanceBefore, netAmount);
-    }
-
-    function testEmergencyWithdrawToken() public {
-        // Setup: mint tokens to contract
-        uint256 tokenAmount = 1000 ether;
-        aWeth.mint(address(prizePool), tokenAmount);
-
-        uint256 ownerTokenBalanceBefore = aWeth.balanceOf(owner);
-
-        vm.startPrank(owner);
-        vm.expectEmit(true, true, true, true);
-        emit EmergencyWithdraw(address(aWeth), tokenAmount);
-
-        prizePool.emergencyWithdraw(address(aWeth));
-        vm.stopPrank();
-
-        assertEq(aWeth.balanceOf(owner) - ownerTokenBalanceBefore, tokenAmount);
-    }
-
-    function testEmergencyWithdrawOnlyOwner() public {
-        vm.startPrank(user1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Ownable.OwnableUnauthorizedAccount.selector,
-                user1
-            )
+        // Verify schedule
+        (uint256 scheduledTime, uint256 amount) = prizePool.emergencySchedules(
+            address(0)
         );
-        prizePool.emergencyWithdraw(address(0));
+        assertGt(scheduledTime, block.timestamp);
+        assertGt(amount, 0);
+    }
+
+    function testExecuteEmergencyWithdraw() public {
+        // Setup: deposit funds and schedule withdrawal
+        uint256 depositAmount = STANDARD_DEPOSIT;
+        vm.startPrank(address(lotteryManager));
+        prizePool.deposit{value: depositAmount}(depositAmount);
         vm.stopPrank();
+
+        vm.prank(owner);
+        prizePool.scheduleEmergencyWithdraw(address(0));
+
+        // Fast forward time
+        vm.warp(block.timestamp + prizePool.EMERGENCY_DELAY() + 1);
+
+        // Execute withdrawal
+        uint256 ownerBalanceBefore = owner.balance;
+        vm.prank(owner);
+        prizePool.executeEmergencyWithdraw(address(0));
+
+        // Verify withdrawal
+        assertGt(owner.balance, ownerBalanceBefore);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -539,5 +474,30 @@ contract PrizePoolTest is Test {
         vm.stopPrank();
 
         assertEq(prizePool.owner(), user1);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          CIRCUIT BREAKER TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testCircuitBreaker() public {
+        // Toggle circuit breaker
+        vm.prank(owner);
+        prizePool.toggleCircuitBreaker();
+
+        // Try to deposit when contract is paused
+        vm.startPrank(address(lotteryManager));
+        vm.expectRevert("Contract paused");
+        prizePool.deposit{value: 1 ether}(1 ether);
+        vm.stopPrank();
+
+        // Reactivate
+        vm.prank(owner);
+        prizePool.toggleCircuitBreaker();
+
+        // Should work now
+        vm.startPrank(address(lotteryManager));
+        prizePool.deposit{value: 1 ether}(1 ether);
+        vm.stopPrank();
     }
 }

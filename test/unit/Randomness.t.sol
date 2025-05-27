@@ -3,10 +3,10 @@ pragma solidity ^0.8.19;
 
 import {Test} from "forge-std/Test.sol";
 import {console} from "forge-std/console.sol";
-import {Randomness} from "../src/core/Randomness.sol";
-import {MockVRFCoordinatorV2} from "./mocks/MockVRFCoordinatorV2.sol";
-import {LotteryManager} from "../src/core/LotteryManager.sol";
-import {ILotteryManager} from "../src/interfaces/ILotteryManager.sol";
+import {Randomness} from "../../src/core/Randomness.sol";
+import {MockVRFCoordinatorV2} from "../mocks/MockVRFCoordinatorV2.sol";
+import {LotteryManager} from "../../src/core/LotteryManager.sol";
+import {ILotteryManager} from "../../src/interfaces/ILotteryManager.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**

@@ -18,6 +18,7 @@ contract MyToken is ERC20, ERC20Permit, ERC20Votes, Ownable {
 
     // Mapping to track authorized minters
     mapping(address => bool) public authorizedMinters;
+    mapping(address => bool) public isBettor;
 
     // Add a modifier to check if an address is authorized to mint
     modifier onlyMinter() {
@@ -50,6 +51,10 @@ contract MyToken is ERC20, ERC20Permit, ERC20Votes, Ownable {
 
     function deal(address to, uint256 amount) public {
         _mint(to, amount);
+    }
+
+    function recordBettor(address user) external {
+        isBettor[user] = true;
     }
 
     function burn(address from, uint256 amount) external onlyMinter {

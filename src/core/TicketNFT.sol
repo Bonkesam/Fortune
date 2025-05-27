@@ -29,6 +29,7 @@ contract TicketNFT is
     // -----------------------------
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     uint256 public constant GOLDEN_TICKET_RARITY = 1;
+    uint256 public constant SILVER_TICKET_RARITY = 2;
     uint256 public constant MAX_BATCH_MINT = 50;
 
     // -----------------------------
@@ -58,6 +59,10 @@ contract TicketNFT is
         address indexed recipient
     );
     event BatchMinted(address indexed to, uint256[] tokenIds);
+    event SilverTicketAwarded(
+        uint256 indexed tokenId,
+        address indexed recipient
+    );
 
     // -----------------------------
     // Errors
@@ -149,6 +154,13 @@ contract TicketNFT is
         goldenTicketCount[ownerOf(tokenId)]++;
 
         emit GoldenTicketAwarded(tokenId, ownerOf(tokenId));
+    }
+
+    function setSilverTicket(uint256 tokenId) external onlyManager {
+        if (!_exists(tokenId)) revert InvalidTokenId();
+
+        _ticketTraits[tokenId].rarity = SILVER_TICKET_RARITY;
+        emit SilverTicketAwarded(tokenId, ownerOf(tokenId));
     }
 
     // -----------------------------

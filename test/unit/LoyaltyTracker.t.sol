@@ -2,8 +2,8 @@
 pragma solidity ^0.8.19;
 
 import {Test, console2} from "forge-std/Test.sol";
-import {LoyaltyTracker} from "../src/core/LoyaltyTracker.sol";
-import {MyToken} from "./mocks/MyToken.sol";
+import {LoyaltyTracker} from "../../src/core/LoyaltyTracker.sol";
+import {MyToken} from "../mocks/MyToken.sol";
 
 /**
  * @title LoyaltyTrackerTest

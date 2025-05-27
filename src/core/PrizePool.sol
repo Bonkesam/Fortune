@@ -8,7 +8,6 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ILotteryManager} from "../interfaces/ILotteryManager.sol";
-import {IAave} from "../interfaces/IAave.sol";
 
 /**
  * @title Advanced Prize Pool with DAO Yield Management
@@ -23,7 +22,7 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     // Constants
     // -----------------------------
     uint256 public constant FEE_DENOMINATOR = 10_000;
-    uint256 public constant MAX_PROTOCOL_FEE = 500; // 5%
+    uint256 public constant MAX_PROTOCOL_FEE = 1000; // 10%
     uint256 public constant YIELD_SLIPPAGE = 100; // 1%
     uint256 public constant DAO_MIN_SHARE = 500; // 5% minimum
     uint256 public constant EMERGENCY_DELAY = 2 days;
@@ -42,9 +41,9 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     bool public reinvestFees;
 
     struct PrizeDistribution {
-        uint256 grandPrize; // 70% of pool
-        uint256 secondaryPrizes; // 20% of pool
-        uint256 daoShare; // 10% of pool
+        uint256 grandPrize; // 30% of pool
+        uint256 secondaryPrizes; // 40% of pool
+        uint256 daoShare; // 30% of pool
     }
 
     struct YieldConfig {
@@ -72,6 +71,7 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
 
     mapping(uint256 => PrizeDistribution) public distributions;
     mapping(address => uint256) public tokenReserves;
+    mapping(address => uint256) public unclaimedPrizes;
 
     uint256 public lastYieldTimestamp;
     uint256 public yieldInterval = 1 days;
@@ -83,11 +83,18 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     event PrizesDistributed(uint256 indexed drawId, uint256 totalAmount);
     event YieldGenerated(address indexed protocol, uint256 yieldAmount);
     event ProtocolFeeUpdated(uint256 newFee);
-    event DAOInvested(address protocol, uint256 amount);
-    event DAOYieldRedeemed(uint256 ethAmount);
+
     event EmergencyScheduled(address asset, uint256 executeTime);
     event CircuitBreakerToggled(bool newState);
     event EmergencyWithdraw(address asset, uint256 amount);
+    event PrizeAwarded(
+        uint256 indexed drawId,
+        address indexed winner,
+        uint256 amount,
+        bool isGolden
+    );
+    event PrizeClaimed(address indexed winner, uint256 amount);
+    event DAOShareTransferred(address indexed treasury, uint256 amount);
 
     // -----------------------------
     // Errors
@@ -135,12 +142,6 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         _setFeeCollector(_feeCollector);
         _setTreasury(_treasury);
         _setProtocolFee(_protocolFee);
-
-        yieldStrategies[AAVE_POOL] = YieldConfig({
-            yieldToken: A_WETH,
-            yieldProtocol: AAVE_POOL,
-            isActive: true
-        });
     }
 
     // -----------------------------
@@ -184,19 +185,21 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         uint256 totalPrize = prizeReserves;
         PrizeDistribution memory dist = _calculateDistribution(totalPrize);
 
-        // Distribute grand prize
-        _safeTransferETH(winners[0], dist.grandPrize);
+        // Record grand prize
+        unclaimedPrizes[winners[0]] += dist.grandPrize;
+        emit PrizeAwarded(drawId, winners[0], dist.grandPrize, true); // true for golden ticket winner
 
-        // Distribute secondary prizes
+        // Record secondary prizes
+        uint256 secondaryPrize = dist.secondaryPrizes / (winners.length - 1);
         for (uint256 i = 1; i < winners.length; i++) {
-            _safeTransferETH(
-                winners[i],
-                dist.secondaryPrizes / (winners.length - 1)
-            );
+            unclaimedPrizes[winners[i]] += secondaryPrize;
+            emit PrizeAwarded(drawId, winners[i], secondaryPrize, false); // false for secondary winners
         }
 
-        // Transfer DAO share
-        daoEthReserves += dist.daoShare;
+        // Transfer DAO share directly to Treasury
+        _safeTransferETH(treasury, dist.daoShare);
+        emit DAOShareTransferred(treasury, dist.daoShare);
+
         prizeReserves =
             totalPrize -
             (dist.grandPrize + dist.secondaryPrizes + dist.daoShare);
@@ -204,74 +207,14 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         emit PrizesDistributed(drawId, totalPrize);
     }
 
-    // -----------------------------
-    // Yield Generation Functions
-    // -----------------------------
+    function claimPrize() external nonReentrant {
+        uint256 amount = unclaimedPrizes[msg.sender];
+        require(amount > 0, "No prize to claim");
 
-    /**
-     * @notice Invest DAO reserves into yield-generating protocol
-     * @param protocol Address of whitelisted yield protocol
-     * @param minAmountOut Minimum expected aWETH received
-     * @dev Implements slippage protection
-     */
-    function investDAOFunds(
-        address protocol,
-        uint256 minAmountOut
-    ) external onlyOwner operational nonReentrant {
-        YieldConfig memory config = yieldStrategies[protocol];
-        if (!config.isActive) revert YieldProtocolNotWhitelisted();
+        unclaimedPrizes[msg.sender] = 0;
+        _safeTransferETH(msg.sender, amount);
 
-        uint256 investmentAmount = daoEthReserves;
-        if (investmentAmount == 0) revert InsufficientLiquidity();
-
-        // Execute yield strategy
-        daoEthReserves = 0;
-        uint256 preBalance = IERC20(config.yieldToken).balanceOf(address(this));
-
-        // Example: Aave deposit
-        IAave(config.yieldProtocol).deposit{value: investmentAmount}(
-            address(0), // ETH
-            investmentAmount,
-            address(this),
-            0
-        );
-        uint256 received = IERC20(config.yieldToken).balanceOf(address(this)) -
-            preBalance;
-
-        require(received >= minAmountOut, "Insufficient yield");
-
-        daoInvestedAssets[config.yieldToken] += received;
-        lastYieldAction = block.timestamp;
-
-        emit DAOInvested(protocol, investmentAmount);
-    }
-
-    /**
-     * @notice Redeem yield-generated assets back to ETH
-     * @param protocol Yield protocol address
-     * @param amount aWETH amount to redeem
-     * @param minEthOut Minimum ETH expected
-     */
-    function redeemDAOYield(
-        address protocol,
-        uint256 amount,
-        uint256 minEthOut
-    ) external onlyOwner operational nonReentrant {
-        YieldConfig memory config = yieldStrategies[protocol];
-        require(
-            daoInvestedAssets[config.yieldToken] >= amount,
-            "Insufficient balance"
-        );
-
-        uint256 preBalance = address(this).balance;
-        IAave(config.yieldProtocol).withdraw(address(0), amount, address(this));
-        uint256 received = address(this).balance - preBalance;
-
-        require(received >= minEthOut, "Slippage too high");
-        daoInvestedAssets[config.yieldToken] -= amount;
-        daoEthReserves += received;
-
-        emit DAOYieldRedeemed(received);
+        emit PrizeClaimed(msg.sender, amount);
     }
 
     // -----------------------------
@@ -324,14 +267,6 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         reinvestFees = status;
     }
 
-    function setYieldProtocol(
-        address protocol,
-        address yieldToken,
-        bool active
-    ) external onlyOwner validAddress(protocol) {
-        yieldStrategies[protocol] = YieldConfig(yieldToken, protocol, active);
-    }
-
     // -----------------------------
     // Internal Functions
     // -----------------------------
@@ -341,9 +276,9 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     ) internal pure returns (PrizeDistribution memory) {
         return
             PrizeDistribution({
-                grandPrize: (totalAmount * 7000) / FEE_DENOMINATOR, // 70%
-                secondaryPrizes: (totalAmount * 2000) / FEE_DENOMINATOR, // 20%
-                daoShare: (totalAmount * 1000) / FEE_DENOMINATOR // 10%
+                grandPrize: (totalAmount * 3000) / FEE_DENOMINATOR, // 30%
+                secondaryPrizes: (totalAmount * 4000) / FEE_DENOMINATOR, // 40%
+                daoShare: (totalAmount * 3000) / FEE_DENOMINATOR // 30%
             });
     }
 
@@ -351,7 +286,7 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         uint256 grand,
         uint256 secondary,
         uint256 dao
-    ) internal {
+    ) internal pure {
         require(grand + secondary + dao == FEE_DENOMINATOR, "Invalid ratios");
         require(dao >= DAO_MIN_SHARE, "DAO share too low");
     }

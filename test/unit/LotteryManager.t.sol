@@ -3,11 +3,13 @@ pragma solidity ^0.8.19;
 
 import {Test} from "forge-std/Test.sol";
 import {console} from "forge-std/console.sol";
-import {LotteryManager} from "../src/core/LotteryManager.sol";
-import {MockTicketNFT} from "./mocks/MockTicketNFT.sol";
-import {MockPrizePool} from "./mocks/MockPrizePool.sol";
-import {MockRandomness} from "./mocks/MockRandomness.sol";
-// Add this with other imports
+import {LotteryManager} from "../../src/core/LotteryManager.sol";
+import {MockTicketNFT} from "../mocks/MockTicketNFT.sol";
+import {MockPrizePool} from "../mocks/MockPrizePool.sol";
+import {MockTreasury} from "../mocks/MockTreasury.sol";
+import {MyToken} from "../mocks/MyToken.sol";
+import {MockRandomness} from "../mocks/MockRandomness.sol";
+
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
@@ -32,6 +34,8 @@ contract LotteryManagerTest is Test {
     MockTicketNFT mockTicketNFT;
     MockPrizePool mockPrizePool;
     MockRandomness mockRandomness;
+    MockTreasury mockTreasury;
+    MyToken mockFORT;
 
     // Events (from LotteryManager)
     event DrawStarted(uint256 indexed drawId, uint256 startTime);
@@ -56,12 +60,15 @@ contract LotteryManagerTest is Test {
         mockTicketNFT = new MockTicketNFT(owner);
         mockPrizePool = new MockPrizePool();
         mockRandomness = new MockRandomness();
+        mockTreasury = new MockTreasury();
+        mockFORT = new MyToken();
 
         // Deploy LotteryManager
         lotteryManager = new LotteryManager(
             address(mockTicketNFT),
             address(mockPrizePool),
             address(mockRandomness),
+            address(mockFORT),
             TICKET_PRICE,
             SALE_PERIOD,
             COOLDOWN_PERIOD,
@@ -129,6 +136,7 @@ contract LotteryManagerTest is Test {
         assertEq(address(lotteryManager.ticketNFT()), address(mockTicketNFT));
         assertEq(address(lotteryManager.prizePool()), address(mockPrizePool));
         assertEq(address(lotteryManager.randomness()), address(mockRandomness));
+        assertEq(address(lotteryManager.fortToken()), address(mockFORT));
         assertEq(lotteryManager.ticketPrice(), TICKET_PRICE);
         assertEq(lotteryManager.salePeriod(), SALE_PERIOD);
         assertEq(lotteryManager.cooldownPeriod(), COOLDOWN_PERIOD);

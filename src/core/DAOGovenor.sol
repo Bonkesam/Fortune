@@ -10,6 +10,7 @@ import {TimelockController} from "@openzeppelin/contracts/governance/TimelockCon
 import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
+import {IFORT} from "../interfaces/IFORT.sol";
 
 contract DAOGovernor is
     Governor,
@@ -25,16 +26,23 @@ contract DAOGovernor is
 
     address public immutable lotteryManager;
     address public immutable prizePool;
+    address public immutable treasury;
+
+    // Store the FORT token contract to check bettor status
+    IFORT public immutable fortToken;
 
     error InvalidTarget();
     error UnauthorizedFunction();
     error InsufficientVotingPower();
+    error NotEligibleToPropose();
+    error NotEligibleToVote();
 
     constructor(
         ERC20Votes _token,
         TimelockController _timelock,
         address _lotteryManager,
-        address _prizePool
+        address _prizePool,
+        address _treasury
     )
         Governor("dFortune DAO Governor")
         GovernorSettings(
@@ -47,6 +55,8 @@ contract DAOGovernor is
     {
         lotteryManager = _lotteryManager;
         prizePool = _prizePool;
+        treasury = _treasury;
+        fortToken = IFORT(address(_token));
     }
 
     ////////////////////////////
@@ -81,19 +91,53 @@ contract DAOGovernor is
     }
 
     ////////////////////////////
+    /// Bettor Verification ////
+    ////////////////////////////
+
+    /**
+     * @notice Verify if an account is eligible to participate in governance
+     * @param account Address to check
+     * @return true if account is a FORT holder who has bet before
+     */
+    function isEligibleForGovernance(
+        address account
+    ) public view returns (bool) {
+        return
+            fortToken.hasBetBefore(account) && fortToken.balanceOf(account) > 0;
+    }
+
+    ////////////////////////////
     /// Proposal Validation ////
     ////////////////////////////
 
+    /**
+     * @notice Create a new proposal (overridden to add bettor verification)
+     * @param targets Contract addresses to call
+     * @param values ETH values to send
+     * @param calldatas Function data to call
+     * @param description Proposal description
+     * @return uint256 Proposal ID
+     */
     function propose(
         address[] memory targets,
         uint256[] memory values,
         bytes[] memory calldatas,
         string memory description
     ) public override returns (uint256) {
+        // Check that proposer is a FORT holder who has bet before
+        if (!isEligibleForGovernance(msg.sender)) {
+            revert NotEligibleToPropose();
+        }
+
         _validateProposal(targets, calldatas);
         return super.propose(targets, values, calldatas, description);
     }
 
+    /**
+     * @notice Validate proposal targets and functions
+     * @param targets Contract addresses to call
+     * @param calldatas Function data to call
+     */
     function _validateProposal(
         address[] memory targets,
         bytes[] memory calldatas
@@ -103,7 +147,11 @@ contract DAOGovernor is
         }
 
         for (uint256 i = 0; i < targets.length; i++) {
-            if (targets[i] != lotteryManager && targets[i] != prizePool) {
+            if (
+                targets[i] != lotteryManager &&
+                targets[i] != prizePool &&
+                targets[i] != treasury
+            ) {
                 revert InvalidTarget();
             }
 
@@ -121,6 +169,11 @@ contract DAOGovernor is
         }
     }
 
+    /**
+     * @notice Check if function is allowed in governance proposals
+     * @param selector Function selector to check
+     * @return bool True if function is allowed
+     */
     function _isAllowedFunction(bytes4 selector) internal pure returns (bool) {
         return
             selector == bytes4(keccak256("setTicketPrice(uint256)")) ||
@@ -130,7 +183,10 @@ contract DAOGovernor is
             ) ||
             selector == bytes4(keccak256("setProtocolFee(uint256)")) ||
             selector ==
-            bytes4(keccak256("setYieldProtocol(address,address,bool)"));
+            bytes4(keccak256("setYieldProtocol(address,address,bool)")) ||
+            selector == bytes4(keccak256("investDAOFunds(address,uint256)")) ||
+            selector ==
+            bytes4(keccak256("redeemDAOYield(address,uint256,uint256)"));
     }
 
     ////////////////////////////
@@ -139,6 +195,26 @@ contract DAOGovernor is
 
     // For OZ v5, adjust quorum settings to ensure proposals can pass
     // Override votingDelay and votingPeriod for complete clarity
+
+    /**
+     * @notice Check if account can cast a vote (requires bettor status)
+     * @param account Account to check
+     * @param proposalId Proposal ID
+     */
+    function _castVote(
+        uint256 proposalId,
+        address account,
+        uint8 support,
+        string memory reason,
+        bytes memory params
+    ) internal override returns (uint256) {
+        // Check that voter is a FORT holder who has bet before
+        if (!isEligibleForGovernance(account)) {
+            revert NotEligibleToVote();
+        }
+
+        return super._castVote(proposalId, account, support, reason, params);
+    }
     function votingDelay()
         public
         view

@@ -68,6 +68,13 @@ interface ITicketNFT {
      */
     function setGoldenTicket(uint256 tokenId) external;
 
+    /**
+     * @notice Upgrade a ticket to Silver status
+     * @param tokenId NFT token ID to upgrade
+     * @dev Restricted to lottery manager contract
+     */
+    function setSilverTicket(uint256 tokenId) external;
+
     // -----------------------------
     // View Functions
     // -----------------------------

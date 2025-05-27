@@ -2,8 +2,8 @@
 pragma solidity ^0.8.19;
 
 import {Test, console} from "forge-std/Test.sol";
-import {Treasury} from "../src/core/Treasury.sol";
-import {MyToken} from "./mocks/MyToken.sol";
+import {Treasury} from "../../src/core/Treasury.sol";
+import {MyToken} from "../mocks/MyToken.sol";
 
 /**
  * @title Treasury Tests

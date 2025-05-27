@@ -59,12 +59,30 @@ interface IFORT {
     // FORT-Specific Functions
     // -----------------------------
 
-    /// @notice Mints new tokens (MINTER_ROLE only)
-    function mint(address to, uint256 amount) external;
-
     /// @notice Burns tokens from address (MINTER_ROLE only)
     function burn(address from, uint256 amount) external;
 
+    /**
+     * @notice Record a user as having placed a bet and award welcome token if first-time
+     * @param bettor Address of the bettor to record
+     * @return awarded Whether welcome token was awarded
+     */
+    function recordBettor(address bettor) external returns (bool awarded);
+
+    /**
+     * @notice Check if an address has bet before
+     * @param account Address to check
+     * @return bool Whether address has bet before
+     */
+    function hasBetBefore(address account) external view returns (bool);
+
+    /**
+     * @notice Mint new tokens (MINTER_ROLE only)
+     * @param to Recipient address
+     * @param amount Amount to mint (in wei)
+     */
+
+    function mint(address to, uint256 amount) external;
     // -----------------------------
     // View & Constants
     // -----------------------------

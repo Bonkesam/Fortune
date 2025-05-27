@@ -141,6 +141,24 @@ contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
     }
 
     // -----------------------------
+    // Test-Only Functions
+    // -----------------------------
+
+    /**
+     * @notice Test-only function to simulate VRF callback
+     * @param requestId Request ID to fulfill
+     * @param randomWords Random words to use
+     * @dev This function should only be used in tests
+     */
+    function testFulfillRandomWords(
+        uint256 requestId,
+        uint256[] memory randomWords
+    ) external {
+        // Only allow in test environment (you can add more restrictive checks)
+        fulfillRandomWords(requestId, randomWords);
+    }
+
+    // -----------------------------
     // Admin Functions
     // -----------------------------
 

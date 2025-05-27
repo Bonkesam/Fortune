@@ -28,16 +28,33 @@ contract FORT is ERC20, ERC20Permit, ERC20Votes, AccessControl {
     /// @notice Role identifier for minting/burning tokens
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
+    /// @notice Role identifier for tracking first-time bettors
+    bytes32 public constant BETTOR_TRACKER_ROLE =
+        keccak256("BETTOR_TRACKER_ROLE");
+
     /// @notice Maximum supply cap (100 million tokens with 18 decimals)
     uint256 public constant MAX_SUPPLY = 100_000_000 * 1e18;
 
+    /// @notice Welcome token amount (1 FORT with 18 decimals)
+    uint256 public constant WELCOME_TOKEN_AMOUNT = 1 * 1e18;
+
     /// @notice Track total minted amount to enforce supply cap
     uint256 public totalMinted;
+
+    /// @notice Track which addresses have already bet at least once
+    /// @dev This automatically creates a getter function: hasBetBefore(address) returns (bool)
+    mapping(address => bool) public hasBetBefore;
 
     /// @dev Custom errors for gas-efficient reverts
     error ExceedsMaxSupply();
     error ZeroAddressProhibited();
     error InvalidBurnAmount();
+    error AlreadyReceivedWelcomeToken();
+    error NotAuthorizedBettorTracker();
+
+    /// @dev Events for tracking
+    event WelcomeTokenAwarded(address indexed user, uint256 amount);
+    event BettorStatusUpdated(address indexed user, bool hasBet);
 
     //////////////////////////////////////
     /// Constructor & Initialization /////
@@ -60,6 +77,45 @@ contract FORT is ERC20, ERC20Permit, ERC20Votes, AccessControl {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MINTER_ROLE, admin);
     }
+
+    ///////////////////////////////
+    /// Bettor Tracking ///////////
+    ///////////////////////////////
+
+    /**
+     * @notice Record a user as having placed a bet and award welcome token if first-time
+     * @param bettor Address of the bettor to record
+     * @dev Only callable by addresses with BETTOR_TRACKER_ROLE
+     * @return awarded Whether welcome token was awarded
+     */
+    function recordBettor(address bettor) external returns (bool awarded) {
+        if (!hasRole(BETTOR_TRACKER_ROLE, msg.sender))
+            revert NotAuthorizedBettorTracker();
+
+        if (bettor == address(0)) revert ZeroAddressProhibited();
+
+        // If first-time bettor, award welcome token
+        if (!hasBetBefore[bettor]) {
+            hasBetBefore[bettor] = true;
+
+            // Award welcome token if supply cap allows
+            if (totalMinted + WELCOME_TOKEN_AMOUNT <= MAX_SUPPLY) {
+                totalMinted += WELCOME_TOKEN_AMOUNT;
+                _mint(bettor, WELCOME_TOKEN_AMOUNT);
+
+                emit WelcomeTokenAwarded(bettor, WELCOME_TOKEN_AMOUNT);
+                emit BettorStatusUpdated(bettor, true);
+                return true;
+            }
+
+            // Still record bettor status even if we couldn't mint
+            emit BettorStatusUpdated(bettor, true);
+        }
+
+        return false;
+    }
+
+    // NOTE: Removed duplicate hasBetBefore function - the public mapping already provides this functionality
 
     ///////////////////////////////
     /// Mint/Burn Operations //////
@@ -109,6 +165,10 @@ contract FORT is ERC20, ERC20Permit, ERC20Votes, AccessControl {
         address account,
         uint256 blockNumber
     ) public view override(Votes) returns (uint256) {
+        // Only allow voting power for accounts that have bet before
+        if (!hasBetBefore[account]) {
+            return 0;
+        }
         return super.getPastVotes(account, blockNumber);
     }
 
@@ -120,6 +180,10 @@ contract FORT is ERC20, ERC20Permit, ERC20Votes, AccessControl {
     function getVotes(
         address account
     ) public view override(Votes) returns (uint256) {
+        // Only allow voting power for accounts that have bet before
+        if (!hasBetBefore[account]) {
+            return 0;
+        }
         return super.getVotes(account);
     }
 

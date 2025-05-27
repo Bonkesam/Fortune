@@ -7,6 +7,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
 import {ITicketNFT} from "../interfaces/ITicketNFT.sol";
 import {IPrizePool} from "../interfaces/IPrizePool.sol";
+import {IFORT} from "../interfaces/IFORT.sol";
 import {IRandomness} from "../interfaces/IRandomness.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
@@ -43,6 +44,9 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
 
     /// @dev Reference to PrizePool contract
     IPrizePool public prizePool;
+
+    /// @dev Reference to FORT contract
+    IFORT public fortToken;
 
     /// @dev Reference to Randomness contract
     IRandomness public randomness;
@@ -123,6 +127,7 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         address _ticketNFT,
         address _prizePool,
         address _randomness,
+        address _fortToken,
         uint256 _ticketPrice,
         uint256 _salePeriod,
         uint256 _cooldownPeriod,
@@ -131,6 +136,7 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         ticketNFT = ITicketNFT(_ticketNFT);
         prizePool = IPrizePool(_prizePool);
         randomness = IRandomness(_randomness);
+        fortToken = IFORT(_fortToken);
         ticketPrice = _ticketPrice;
         salePeriod = _salePeriod;
         cooldownPeriod = _cooldownPeriod;
@@ -196,6 +202,7 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
             quantity,
             currentDrawId
         );
+        fortToken.recordBettor(msg.sender);
 
         // Record ticket IDs for this draw
         for (uint256 i = 0; i < quantity; i++) {
@@ -268,6 +275,13 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
             uint256 ticketIndex = draw.winningNumbers[i];
             uint256 ticketId = draw.tickets[ticketIndex];
             winners[i] = ticketNFT.ownerOf(ticketId);
+
+            // Set first ticket as golden
+            if (i == 0) {
+                ticketNFT.setGoldenTicket(ticketId);
+            } else {
+                ticketNFT.setSilverTicket(ticketId);
+            }
         }
 
         prizePool.distributePrizes(drawId, winners);

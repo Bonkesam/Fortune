@@ -2,7 +2,7 @@
 pragma solidity ^0.8.19;
 
 import {Test, console} from "forge-std/Test.sol";
-import {TicketNFT} from "../src/core/TicketNFT.sol";
+import {TicketNFT} from "../../src/core/TicketNFT.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol"; // Add this import
 
 contract TicketNFTTest is Test {

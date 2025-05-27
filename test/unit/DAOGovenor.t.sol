@@ -4,10 +4,11 @@ pragma solidity ^0.8.19;
 import {Test, console} from "forge-std/Test.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
-import {DAOGovernor} from "../src/core/DAOGovenor.sol";
-import {MyToken} from "./mocks/MyToken.sol";
-import {MockLotteryManager} from "./mocks/MockLotteryManager.sol";
-import {MockPrizePool} from "./mocks/MockPrizePool.sol";
+import {DAOGovernor} from "../../src/core/DAOGovenor.sol";
+import {MyToken} from "../mocks/MyToken.sol";
+import {MockLotteryManager} from "../mocks/MockLotteryManager.sol";
+import {MockPrizePool} from "../mocks/MockPrizePool.sol";
+import {MockTreasury} from "../mocks/MockTreasury.sol";
 
 contract DAOGovernorTest is Test {
     // Test contracts
@@ -16,6 +17,7 @@ contract DAOGovernorTest is Test {
     DAOGovernor public governor;
     MockLotteryManager public lotteryManager;
     MockPrizePool public prizePool;
+    MockTreasury public treasury;
 
     // Test addresses
     address public deployer = makeAddr("deployer");
@@ -85,6 +87,7 @@ contract DAOGovernorTest is Test {
         // Deploy mock contracts
         lotteryManager = new MockLotteryManager();
         prizePool = new MockPrizePool();
+        treasury = new MockTreasury();
 
         // Set proper references
         lotteryManager.setPrizePool(address(prizePool));
@@ -95,7 +98,8 @@ contract DAOGovernorTest is Test {
             token,
             timelock,
             address(lotteryManager),
-            address(prizePool)
+            address(prizePool),
+            address(treasury) // treasury address
         );
 
         // Transfer ownership of timelock to the governor
@@ -106,6 +110,7 @@ contract DAOGovernorTest is Test {
 
         // Transfer ownership of prize pool to the timelock
         prizePool.transferOwnership(address(timelock));
+        treasury.transferOwnership(address(timelock));
 
         // Distribute tokens for testing
         token.transfer(alice, 10e18);
@@ -168,6 +173,175 @@ contract DAOGovernorTest is Test {
         uint256 expectedQuorum = (token.totalSupply() * QUORUM_NUMERATOR) /
             10000;
         assertEq(governor.quorum(timestamp), expectedQuorum);
+    }
+
+    //////////////////////////
+    // Treasury Tests ////////
+    //////////////////////////
+
+    function testTreasuryInvestmentProposal() public {
+        vm.startPrank(deployer);
+
+        // Fund the mock treasury
+        treasury.setMockBalance(50 ether);
+
+        // Create proposal to invest DAO funds
+        address mockProtocol = address(0x1);
+        targets = new address[](1);
+        targets[0] = address(treasury);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "investDAOFunds(address,uint256)",
+            mockProtocol,
+            45 ether // minAmountOut
+        );
+
+        description = "Proposal: Invest DAO funds in yield protocol";
+        proposalId = governor.propose(targets, values, calldatas, description);
+        vm.stopPrank();
+
+        // Execute full voting workflow
+        uint256 votingDelay = governor.votingDelay();
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
+
+        vm.prank(deployer);
+        governor.castVote(proposalId, 1); // FOR
+
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
+
+        bytes32 descHash = keccak256(bytes(description));
+        vm.startPrank(deployer);
+        governor.queue(targets, values, calldatas, descHash);
+        vm.warp(block.timestamp + 2);
+        governor.execute(targets, values, calldatas, descHash);
+        vm.stopPrank();
+
+        // Verify investment was executed
+        assertEq(treasury.lastYieldAction(), block.timestamp);
+    }
+
+    function testTreasuryYieldRedemptionProposal() public {
+        // Setup: First invest some funds
+        treasury.setMockBalance(50 ether);
+        vm.prank(address(timelock));
+        treasury.investDAOFunds(address(0x1), 45 ether);
+
+        vm.startPrank(deployer);
+
+        // Create proposal to redeem yield
+        targets = new address[](1);
+        targets[0] = address(treasury);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "redeemDAOYield(address,uint256,uint256)",
+            address(0x1), // protocol
+            25 ether, // amount to redeem
+            20 ether // minEthOut
+        );
+
+        description = "Proposal: Redeem yield from protocol";
+        proposalId = governor.propose(targets, values, calldatas, description);
+        vm.stopPrank();
+
+        // Execute workflow
+        uint256 votingDelay = governor.votingDelay();
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
+
+        vm.prank(deployer);
+        governor.castVote(proposalId, 1);
+
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
+
+        bytes32 descHash = keccak256(bytes(description));
+        vm.startPrank(deployer);
+        governor.queue(targets, values, calldatas, descHash);
+        vm.warp(block.timestamp + 2);
+        governor.execute(targets, values, calldatas, descHash);
+        vm.stopPrank();
+
+        // Verify redemption increased treasury balance
+        assertGt(treasury.mockBalance(), 0);
+    }
+
+    function testInvalidTreasuryProposal() public {
+        vm.startPrank(deployer);
+
+        // Try to call unauthorized function on treasury
+        targets = new address[](1);
+        targets[0] = address(treasury);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "transferOwnership(address)",
+            alice
+        );
+
+        description = "Invalid treasury proposal";
+
+        vm.expectRevert(DAOGovernor.UnauthorizedFunction.selector);
+        governor.propose(targets, values, calldatas, description);
+
+        vm.stopPrank();
+    }
+
+    function testTreasuryYieldStrategyConfiguration() public {
+        vm.startPrank(deployer);
+
+        address newProtocol = makeAddr("newProtocol");
+        address newYieldToken = makeAddr("newYieldToken");
+
+        targets = new address[](1);
+        targets[0] = address(treasury);
+        values = new uint256[](1);
+        values[0] = 0;
+        calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature(
+            "setYieldProtocol(address,address,bool)",
+            newProtocol,
+            newYieldToken,
+            true
+        );
+
+        description = "Configure new yield strategy";
+        proposalId = governor.propose(targets, values, calldatas, description);
+        vm.stopPrank();
+
+        // Execute workflow
+        uint256 votingDelay = governor.votingDelay();
+        vm.roll(block.number + votingDelay + 1);
+        vm.warp(block.timestamp + votingDelay + 1);
+
+        vm.prank(deployer);
+        governor.castVote(proposalId, 1);
+
+        uint256 votingPeriod = governor.votingPeriod();
+        vm.roll(block.number + votingPeriod);
+        vm.warp(block.timestamp + votingPeriod);
+
+        bytes32 descHash = keccak256(bytes(description));
+        vm.startPrank(deployer);
+        governor.queue(targets, values, calldatas, descHash);
+        vm.warp(block.timestamp + 2);
+        governor.execute(targets, values, calldatas, descHash);
+        vm.stopPrank();
+
+        // Verify strategy was configured
+        (address yieldToken, address protocol, bool isActive) = treasury
+            .yieldStrategies(newProtocol);
+        assertEq(yieldToken, newYieldToken);
+        assertEq(protocol, newProtocol);
+        assertTrue(isActive);
     }
 
     //////////////////////////
@@ -610,7 +784,8 @@ contract DAOGovernorTest is Test {
             token,
             timelock,
             address(lotteryManager),
-            address(badTarget) // Add bad target as valid
+            address(badTarget), // Add bad target as valid
+            address(treasury)
         );
 
         // Grant roles to vulnerable governor
