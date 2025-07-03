@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
+import {VRFCoordinatorV2_5} from "@chainlink/contracts/src/v0.8/vrf/dev/VRFCoordinatorV2_5.sol";
+import {VRFConsumerBaseV2Plus} from "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
+import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {ILotteryManager} from "../interfaces/ILotteryManager.sol";
 
-import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 /**
  * @title Verifiable Randomness Provider
- * @notice Secure Chainlink VRF integration for provably fair random number generation
- * @dev Implements VRF v2 with callback validation and request tracking
+ * @notice Secure Chainlink VRF v2.5 integration for provably fair random number generation
+ * @dev Implements VRF v2.5 with callback validation and request tracking
  */
-contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
+contract Randomness is VRFConsumerBaseV2Plus, Ownable2Step, ReentrancyGuard {
     // -----------------------------
     // Chainlink VRF Configuration
     // -----------------------------
-    VRFCoordinatorV2Interface public immutable VRF_COORDINATOR;
+    VRFCoordinatorV2_5 public immutable VRF_COORDINATOR;
     bytes32 public immutable KEY_HASH;
-    uint64 public subscriptionId;
+    uint256 public subscriptionId; // ← CORRECT: uint256 for v2.5
     uint32 public callbackGasLimit = 500_000;
     uint16 public requestConfirmations = 3;
 
@@ -42,7 +43,7 @@ contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
     // -----------------------------
     event RandomnessRequested(uint256 indexed drawId, uint256 requestId);
     event RandomnessFulfilled(uint256 indexed drawId, uint256 requestId);
-    event SubscriptionUpdated(uint64 newSubscriptionId);
+    event SubscriptionUpdated(uint256 newSubscriptionId);
     event CallbackGasLimitUpdated(uint32 newGasLimit);
 
     // -----------------------------
@@ -68,13 +69,13 @@ contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
     constructor(
         address vrfCoordinator,
         bytes32 keyHash,
-        uint64 _subscriptionId,
+        uint256 _subscriptionId, // ← CORRECT: uint256 for v2.5
         address _lotteryManager,
         address initialOwner
-    ) VRFConsumerBaseV2(vrfCoordinator) Ownable(initialOwner) {
+    ) VRFConsumerBaseV2Plus(vrfCoordinator) Ownable(initialOwner) {
         if (vrfCoordinator == address(0)) revert InvalidCoordinator();
 
-        VRF_COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);
+        VRF_COORDINATOR = VRFCoordinatorV2_5(vrfCoordinator);
         KEY_HASH = keyHash;
         subscriptionId = _subscriptionId;
         lotteryManager = ILotteryManager(_lotteryManager);
@@ -96,14 +97,23 @@ contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
         // Check for existing request
         if (drawToRequestId[drawId] != 0) revert InvalidRequest();
 
+        // Create VRF request using v2.5 format
+        VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient
+            .RandomWordsRequest({
+                keyHash: KEY_HASH,
+                subId: subscriptionId,
+                requestConfirmations: requestConfirmations,
+                callbackGasLimit: callbackGasLimit,
+                numWords: 1,
+                extraArgs: VRFV2PlusClient._argsToBytes(
+                    VRFV2PlusClient.ExtraArgsV1({
+                        nativePayment: false // Use LINK for payment
+                    })
+                )
+            });
+
         // Request randomness from Chainlink
-        requestId = VRF_COORDINATOR.requestRandomWords(
-            KEY_HASH,
-            subscriptionId,
-            requestConfirmations,
-            callbackGasLimit,
-            1 // Number of random values needed (we'll expand in callback)
-        );
+        requestId = VRF_COORDINATOR.requestRandomWords(request);
 
         // Store request metadata
         vrfRequests[requestId] = VRFRequest({
@@ -125,7 +135,7 @@ contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
      */
     function fulfillRandomWords(
         uint256 requestId,
-        uint256[] memory randomWords
+        uint256[] calldata randomWords
     ) internal override nonReentrant {
         VRFRequest storage request = vrfRequests[requestId];
         if (request.fulfilled) revert AlreadyFulfilled();
@@ -167,9 +177,30 @@ contract Randomness is VRFConsumerBaseV2, Ownable2Step, ReentrancyGuard {
      * @param newSubscriptionId New subscription ID
      * @dev Only owner can update
      */
-    function updateSubscriptionId(uint64 newSubscriptionId) external onlyOwner {
+    function updateSubscriptionId(
+        uint256 newSubscriptionId
+    ) external onlyOwner {
         subscriptionId = newSubscriptionId;
         emit SubscriptionUpdated(newSubscriptionId);
+    }
+
+    function setLotteryManager(address _manager) external onlyOwner {
+        if (subscriptionId == 0) {
+            // Skip if subscription not set yet
+            return;
+        }
+
+        // Remove current contract as consumer
+        VRF_COORDINATOR.removeConsumer(subscriptionId, address(this));
+
+        // Add new manager as consumer
+        VRF_COORDINATOR.addConsumer(subscriptionId, _manager);
+    }
+
+    // Set subscription ID for V2.5
+    function setSubscriptionId(uint256 _subId) external onlyOwner {
+        require(subscriptionId == 0, "Subscription already set");
+        subscriptionId = _subId;
     }
 
     /**

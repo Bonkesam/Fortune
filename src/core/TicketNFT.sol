@@ -100,7 +100,7 @@ contract TicketNFT is
         _baseTokenURI = baseURI;
         lotteryManager = manager;
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, initialOwner);
         _grantRole(MINTER_ROLE, manager);
 
         _setRoleAdmin(MINTER_ROLE, DEFAULT_ADMIN_ROLE);
@@ -307,7 +307,10 @@ contract TicketNFT is
     // -----------------------------
 
     /// @dev Prevent changing manager after deployment
-    function updateLotteryManager(address) external pure {
-        revert ManagerImmutable();
+    function updateLotteryManager(address _newManager) external onlyOwner {
+        require(_newManager != address(0), "Invalid address");
+        _revokeRole(MINTER_ROLE, lotteryManager);
+        lotteryManager = _newManager;
+        _grantRole(MINTER_ROLE, _newManager);
     }
 }

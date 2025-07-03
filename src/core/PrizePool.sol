@@ -35,7 +35,7 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
     // -----------------------------
     // State Variables
     // -----------------------------
-    ILotteryManager public immutable lotteryManager;
+    ILotteryManager public lotteryManager;
     address public treasury;
     address public feeCollector;
     bool public reinvestFees;
@@ -255,11 +255,16 @@ contract PrizePool is Ownable2Step, ReentrancyGuard {
         _setProtocolFee(newFee);
     }
 
+    function setLotteryManager(address _manager) external onlyOwner {
+        require(_manager != address(0), "Invalid address");
+        lotteryManager = ILotteryManager(_manager);
+    }
+
     function setDistributionRatios(
         uint256 grand,
         uint256 secondary,
         uint256 dao
-    ) external onlyOwner {
+    ) external view onlyOwner {
         _validateDistributionRatios(grand, secondary, dao);
     }
 

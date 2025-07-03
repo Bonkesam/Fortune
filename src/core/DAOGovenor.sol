@@ -79,7 +79,7 @@ contract DAOGovernor is
 
     // Fix for OZ v5 compatibility
     function proposalNeedsQueuing(
-        uint256 proposalId
+        uint256 /*proposalId*/
     )
         public
         view

@@ -36,7 +36,7 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
     /// @notice Duration of ticket sales period (seconds)
     uint256 public salePeriod;
 
-    /// @notice Duration between draw finalization and prize claim (seconds)
+    /// @notice Duration bAetween draw finalization and prize claim (seconds)
     uint256 public cooldownPeriod;
 
     /// @dev Reference to TicketNFT contract
@@ -400,5 +400,9 @@ contract LotteryManager is Ownable2Step, ReentrancyGuard {
         uint256 balance = address(this).balance;
         payable(owner()).sendValue(balance);
         emit FundsRecovered(owner(), balance);
+    }
+    function setPrizePool(address _prizePool) external onlyOwner {
+        require(address(prizePool) == address(0), "PrizePool already set");
+        prizePool = IPrizePool(_prizePool);
     }
 }
